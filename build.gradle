@@ -1,0 +1,221 @@
+import org.apache.tools.ant.filters.ReplaceTokens
+import org.gradle.plugins.signing.Sign
+
+plugins {
+    alias(libs.plugins.java)
+    alias(libs.plugins.quarkus)
+    alias(libs.plugins.maven.publish)
+    id 'signing'
+    alias(libs.plugins.nmcp.single)
+    alias(libs.plugins.axion.release)
+    alias(libs.plugins.proto.toolchain)
+}
+
+def pipestreamBomVersion = findProperty('pipestreamBomVersion')
+
+// Axion-release configuration for automatic versioning
+scmVersion {
+    tag {
+        prefix = 'v'
+        initialVersion { config, position -> '0.0.1' }
+    }
+    checks {
+        uncommittedChanges = false
+        aheadOfRemote = false
+        snapshotDependencies = false
+    }
+}
+
+// Proto toolchain configuration - uses git-proto-workspace mode for cross-module imports
+pipestreamProtos {
+    sourceMode = 'git-proto-workspace'
+    gitRepo = "https://github.com/ai-pipestream/pipestream-protos.git"
+    gitRef = "main"
+    generateMutiny = true
+    generateDescriptors = true
+
+    modules {
+        register("common")
+        register("pipeline-module")
+        register("opensearch")
+        register("schemamanager")
+        register("semantic-indexing")
+    }
+}
+
+dependencies {
+    // Import pipestream BOM to align all managed versions
+    implementation platform("ai.pipestream:pipestream-bom:${pipestreamBomVersion}")
+
+    // Core Quarkus dependencies
+    implementation 'io.quarkus:quarkus-arc'
+    implementation 'io.quarkus:quarkus-grpc'
+    implementation 'io.quarkus:quarkus-rest'
+    implementation 'io.quarkus:quarkus-rest-jackson'
+    implementation 'io.quarkus:quarkus-smallrye-health'
+    implementation 'io.quarkus:quarkus-smallrye-stork'
+    implementation 'io.quarkus:quarkus-hibernate-validator'
+    implementation 'io.quarkus:quarkus-cache'
+    implementation 'io.quarkus:quarkus-container-image-docker'
+
+    // Service Discovery dependencies for Consul
+    implementation 'io.smallrye.stork:stork-service-discovery-consul'
+    implementation 'io.smallrye.reactive:smallrye-mutiny-vertx-consul-client'
+
+    // Pipestream platform libraries
+    implementation 'ai.pipestream:pipestream-quarkus-devservices'
+    implementation 'ai.pipestream:quarkus-dynamic-grpc'
+    implementation 'ai.pipestream:pipestream-service-registration'
+    implementation 'ai.pipestream:pipestream-server'
+
+    // Protobuf JSON utilities
+    implementation 'com.google.protobuf:protobuf-java-util'
+
+    // Apache Commons utilities
+    implementation libs.commons.lang3
+
+    // Testing
+    testImplementation platform("ai.pipestream:pipestream-bom:${pipestreamBomVersion}")
+    testImplementation 'io.quarkus:quarkus-junit5'
+    testImplementation 'io.quarkus:quarkus-junit5-mockito'
+    testImplementation 'io.rest-assured:rest-assured'
+
+    runtimeOnly libs.quarkus.logging.manager
+}
+
+group = 'ai.pipestream.module'
+version = "${scmVersion.version}"
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    withJavadocJar()
+    withSourcesJar()
+}
+
+test {
+    systemProperty "java.util.logging.manager", "org.jboss.logmanager.LogManager"
+    maxHeapSize = "4g"
+    jvmArgs = ["-Xmx4g", "-XX:MaxMetaspaceSize=512m", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED"]
+}
+
+compileJava {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-parameters'
+}
+
+compileTestJava {
+    options.encoding = 'UTF-8'
+}
+
+// Configure Javadoc task
+tasks.withType(Javadoc).configureEach { task ->
+    def opts = task.options
+    opts.encoding = 'UTF-8'
+    opts.charSet = 'UTF-8'
+    opts.locale = 'en'
+    opts.addStringOption('Xdoclint:-missing', '-quiet')
+    task.exclude('**/internal/**', '**/impl/**', '**/test/**')
+}
+
+// Enable resource filtering to replace @version@ in application.properties
+processResources {
+    filesMatching('**/*.properties') {
+        filter(ReplaceTokens, tokens: [
+            version: project.version.toString()
+        ])
+    }
+}
+
+processTestResources {
+    filesMatching('**/*.properties') {
+        filter(ReplaceTokens, tokens: [
+            version: project.version.toString()
+        ])
+    }
+}
+
+quarkusDev {
+    jvmArgs = ["-Xmx4g", "-XX:MaxMetaspaceSize=512m", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED"]
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        maven(MavenPublication) { publication ->
+            from components.java
+            artifact(file("${buildDir}/quarkus-app/quarkus-run.jar")) { artifact ->
+                artifact.classifier = 'runner'
+                artifact.builtBy tasks.named('quarkusBuild')
+            }
+            pom { pom ->
+                name.set('Semantic Manager Module')
+                description.set('Semantic indexing coordinator module for the Pipestream platform')
+                url.set('https://github.com/ai-pipestream/module-semantic-manager')
+
+                licenses {
+                    license {
+                        name.set('MIT License')
+                        url.set('https://opensource.org/license/mit')
+                    }
+                }
+
+                developers {
+                    developer {
+                        id.set('krickert')
+                        name.set('Pipestream Engine Team')
+                    }
+                }
+
+                scm {
+                    connection.set('scm:git:git://github.com/ai-pipestream/module-semantic-manager.git')
+                    developerConnection.set('scm:git:ssh://github.com/ai-pipestream/module-semantic-manager.git')
+                    url.set('https://github.com/ai-pipestream/module-semantic-manager')
+                }
+            }
+        }
+    }
+
+    repositories {
+        mavenLocal()
+
+        if (System.getenv("GITHUB_ACTOR") != null) {
+            maven {
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/ai-pipestream/module-semantic-manager")
+                credentials {
+                    username = System.getenv("GITHUB_ACTOR")
+                    password = System.getenv("GITHUB_TOKEN")
+                }
+            }
+        }
+    }
+}
+
+// GPG Signing
+signing {
+    def signingKey = System.getenv("GPG_PRIVATE_KEY")
+    def signingPassword = System.getenv("GPG_PASSPHRASE")
+
+    if (signingKey && signingPassword) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+        sign publishing.publications.maven
+    }
+}
+
+// Ensure signing tasks run before NMCP publication
+afterEvaluate {
+    tasks.matching { it.name.startsWith("nmcpZipAllPublications") || it.name.startsWith("nmcpPublishAllPublicationsToCentralPortal") }
+        .configureEach { nmcpTask ->
+            nmcpTask.dependsOn(tasks.withType(Sign))
+        }
+}
+
+// Maven Central publishing via NMCP
+nmcp {
+    publishAllPublicationsToCentralPortal {
+        username = providers.environmentVariable("MAVEN_CENTRAL_USERNAME")
+        password = providers.environmentVariable("MAVEN_CENTRAL_PASSWORD")
+        publishingType = "AUTOMATIC"
+    }
+}

@@ -1,0 +1,42 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'module-semantic-manager'
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+
+    versionCatalogs {
+        libs {
+            // Import version catalog from published BOM
+            from("ai.pipestream:pipestream-bom-catalog:${pipestreamBomVersion}")
+        }
+    }
+
+    repositories {
+        // Maven Local for published ai.pipestream artifacts during development
+        mavenLocal {
+            content {
+                includeGroupByRegex "ai\\.pipestream(\\..*)?"
+            }
+        }
+
+        // Maven Central (always available, default for public builds)
+        mavenCentral()
+
+        // Maven Central snapshots host ai.pipestream SNAPSHOTs
+        maven {
+            url = uri('https://central.sonatype.com/repository/maven-snapshots/')
+            mavenContent {
+                snapshotsOnly()
+            }
+            content {
+                includeGroupByRegex "ai\\.pipestream(\\..*)?"
+            }
+        }
+    }
+}
