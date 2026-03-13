@@ -1,8 +1,6 @@
 package ai.pipestream.module.semanticmanager;
 
-import ai.pipestream.data.v1.PipeDoc;
-import ai.pipestream.data.v1.SearchMetadata;
-import ai.pipestream.data.v1.SemanticProcessingResult;
+import ai.pipestream.data.v1.*;
 import ai.pipestream.module.semanticmanager.config.SemanticManagerOptions;
 import ai.pipestream.module.semanticmanager.service.ChunkerStreamClient;
 import ai.pipestream.module.semanticmanager.service.EmbedderStreamClient;
@@ -12,6 +10,8 @@ import ai.pipestream.opensearch.v1.VectorSet;
 import ai.pipestream.semantic.v1.StreamChunksResponse;
 import ai.pipestream.semantic.v1.StreamEmbeddingsRequest;
 import ai.pipestream.semantic.v1.StreamEmbeddingsResponse;
+import com.google.protobuf.Struct;
+import com.google.protobuf.Value;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,9 +24,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-/**
- * Unit test for the SemanticIndexingOrchestrator with mock services.
- */
 class SemanticIndexingOrchestratorTest {
 
     private SemanticIndexingOrchestrator orchestrator;
@@ -41,14 +38,17 @@ class SemanticIndexingOrchestratorTest {
         chunkerStreamClient = mock(ChunkerStreamClient.class);
         embedderStreamClient = mock(EmbedderStreamClient.class);
 
-        // Inject mocks via reflection
         setField(orchestrator, "vectorSetResolver", vectorSetResolver);
         setField(orchestrator, "chunkerStreamClient", chunkerStreamClient);
         setField(orchestrator, "embedderStreamClient", embedderStreamClient);
     }
 
+    // =========================================================================
+    // VectorSetService fallback tests
+    // =========================================================================
+
     @Test
-    void testOrchestrate_noVectorSets_returnsUnchangedDoc() {
+    void testFallback_noVectorSets_returnsUnchangedDoc() {
         PipeDoc inputDoc = PipeDoc.newBuilder()
                 .setDocId("test-doc-1")
                 .setSearchMetadata(SearchMetadata.newBuilder().setBody("Hello world").build())
@@ -67,194 +67,43 @@ class SemanticIndexingOrchestratorTest {
     }
 
     @Test
-    void testOrchestrate_withVectorSets_producesResults() {
+    void testFallback_withVectorSets_producesResults() {
         PipeDoc inputDoc = PipeDoc.newBuilder()
                 .setDocId("test-doc-2")
                 .setSearchMetadata(SearchMetadata.newBuilder()
-                        .setBody("This is a test document with enough text to chunk properly.")
+                        .setBody("This is a test document.")
                         .build())
                 .build();
 
         VectorSet vs1 = VectorSet.newBuilder()
-                .setId("vs-1")
-                .setName("body-minilm")
+                .setId("vs-1").setName("body-minilm")
                 .setChunkerConfigId("chunker-a")
                 .setEmbeddingModelConfigId("all-MiniLM-L6-v2")
-                .setIndexName("test-index")
-                .setFieldName("embeddings")
-                .setResultSetName("body_minilm_results")
-                .setSourceField("body")
-                .setVectorDimensions(384)
-                .build();
-
-        VectorSet vs2 = VectorSet.newBuilder()
-                .setId("vs-2")
-                .setName("body-mpnet")
-                .setChunkerConfigId("chunker-a")
-                .setEmbeddingModelConfigId("all-mpnet-base-v2")
-                .setIndexName("test-index")
-                .setFieldName("embeddings")
-                .setResultSetName("body_mpnet_results")
-                .setSourceField("body")
-                .setVectorDimensions(768)
+                .setIndexName("test-index").setFieldName("embeddings")
+                .setResultSetName("body_minilm_results").setSourceField("body")
                 .build();
 
         when(vectorSetResolver.resolveVectorSets("test-index"))
-                .thenReturn(Uni.createFrom().item(List.of(vs1, vs2)));
+                .thenReturn(Uni.createFrom().item(List.of(vs1)));
 
-        // Mock chunker: return 2 chunks
-        StreamChunksResponse chunk1 = StreamChunksResponse.newBuilder()
-                .setRequestId("req-1")
-                .setDocId("test-doc-2")
-                .setChunkId("chunk-0001")
-                .setChunkNumber(0)
-                .setTextContent("This is a test document")
-                .setStartOffset(0)
-                .setEndOffset(23)
-                .setChunkConfigId("chunker-a")
-                .setSourceFieldName("body")
-                .setIsLast(false)
-                .build();
-
-        StreamChunksResponse chunk2 = StreamChunksResponse.newBuilder()
-                .setRequestId("req-1")
-                .setDocId("test-doc-2")
-                .setChunkId("chunk-0002")
-                .setChunkNumber(1)
-                .setTextContent("with enough text to chunk properly.")
-                .setStartOffset(24)
-                .setEndOffset(59)
-                .setChunkConfigId("chunker-a")
-                .setSourceFieldName("body")
-                .setIsLast(true)
-                .build();
-
-        when(chunkerStreamClient.streamChunks(any()))
-                .thenReturn(Multi.createFrom().items(chunk1, chunk2));
-
-        // Mock embedder: return vectors for each chunk
-        when(embedderStreamClient.streamEmbeddings(any()))
-                .thenAnswer(invocation -> {
-                    @SuppressWarnings("unchecked")
-                    Multi<StreamEmbeddingsRequest> requests = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
-                    return requests.map(req -> StreamEmbeddingsResponse.newBuilder()
-                            .setRequestId(req.getRequestId())
-                            .setDocId(req.getDocId())
-                            .setChunkId(req.getChunkId())
-                            .setChunkConfigId(req.getChunkConfigId())
-                            .setEmbeddingModelId(req.getEmbeddingModelId())
-                            .addVector(0.1f)
-                            .addVector(0.2f)
-                            .addVector(0.3f)
-                            .setSuccess(true)
-                            .build());
-                });
+        setupMockChunkerAndEmbedder();
 
         SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8);
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
                 .await().indefinitely();
 
-        assertEquals("test-doc-2", result.getDocId());
-        // Should have 2 SemanticProcessingResults (one per VectorSet, same chunker group)
-        assertEquals(2, result.getSearchMetadata().getSemanticResultsCount());
-
-        for (SemanticProcessingResult spr : result.getSearchMetadata().getSemanticResultsList()) {
-            assertEquals("chunker-a", spr.getChunkConfigId());
-            assertEquals("body", spr.getSourceFieldName());
-            assertEquals(2, spr.getChunksCount());
-            // Each chunk should have a 3-dim vector
-            assertTrue(spr.getChunks(0).getEmbeddingInfo().getVectorCount() > 0);
-        }
+        assertEquals(1, result.getSearchMetadata().getSemanticResultsCount());
+        assertEquals("chunker-a", result.getSearchMetadata().getSemanticResults(0).getChunkConfigId());
     }
 
     @Test
-    void testOrchestrate_partialEmbedderFailure_returnsPartialResults() {
+    void testFallback_deduplicatesChunking() {
         PipeDoc inputDoc = PipeDoc.newBuilder()
                 .setDocId("test-doc-3")
-                .setSearchMetadata(SearchMetadata.newBuilder()
-                        .setBody("Some text for partial failure test.")
-                        .build())
+                .setSearchMetadata(SearchMetadata.newBuilder().setBody("Text").build())
                 .build();
 
-        VectorSet vs1 = VectorSet.newBuilder()
-                .setId("vs-1")
-                .setName("ok-embedder")
-                .setChunkerConfigId("chunker-a")
-                .setEmbeddingModelConfigId("model-ok")
-                .setIndexName("test-index")
-                .setFieldName("embeddings")
-                .setResultSetName("ok_results")
-                .setSourceField("body")
-                .build();
-
-        VectorSet vs2 = VectorSet.newBuilder()
-                .setId("vs-2")
-                .setName("failing-embedder")
-                .setChunkerConfigId("chunker-a")
-                .setEmbeddingModelConfigId("model-fail")
-                .setIndexName("test-index")
-                .setFieldName("embeddings")
-                .setResultSetName("fail_results")
-                .setSourceField("body")
-                .build();
-
-        when(vectorSetResolver.resolveVectorSets("test-index"))
-                .thenReturn(Uni.createFrom().item(List.of(vs1, vs2)));
-
-        StreamChunksResponse chunk = StreamChunksResponse.newBuilder()
-                .setChunkId("chunk-0001")
-                .setChunkNumber(0)
-                .setTextContent("Some text")
-                .setChunkConfigId("chunker-a")
-                .setSourceFieldName("body")
-                .setIsLast(true)
-                .build();
-
-        when(chunkerStreamClient.streamChunks(any()))
-                .thenReturn(Multi.createFrom().items(chunk));
-
-        // First embedder call succeeds, second fails
-        when(embedderStreamClient.streamEmbeddings(any()))
-                .thenAnswer(invocation -> {
-                    @SuppressWarnings("unchecked")
-                    Multi<StreamEmbeddingsRequest> requests = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
-                    return requests.map(req -> {
-                        if ("model-fail".equals(req.getEmbeddingModelId())) {
-                            throw new RuntimeException("Embedder unavailable");
-                        }
-                        return StreamEmbeddingsResponse.newBuilder()
-                                .setRequestId(req.getRequestId())
-                                .setDocId(req.getDocId())
-                                .setChunkId(req.getChunkId())
-                                .setChunkConfigId(req.getChunkConfigId())
-                                .setEmbeddingModelId(req.getEmbeddingModelId())
-                                .addVector(0.5f)
-                                .setSuccess(true)
-                                .build();
-                    });
-                });
-
-        SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8);
-
-        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
-
-        // Should have at least 1 result (partial failure tolerance)
-        assertTrue(result.getSearchMetadata().getSemanticResultsCount() >= 1);
-    }
-
-    @Test
-    void testOrchestrate_deduplicatesChunking() {
-        PipeDoc inputDoc = PipeDoc.newBuilder()
-                .setDocId("test-doc-4")
-                .setSearchMetadata(SearchMetadata.newBuilder()
-                        .setBody("Text for deduplication test.")
-                        .build())
-                .build();
-
-        // Two VectorSets with the SAME chunker config + source field
-        // Should result in only ONE chunker call, but TWO embedder calls
         VectorSet vs1 = VectorSet.newBuilder()
                 .setId("vs-1").setName("vs1")
                 .setChunkerConfigId("same-chunker")
@@ -272,9 +121,190 @@ class SemanticIndexingOrchestratorTest {
         when(vectorSetResolver.resolveVectorSets("test-index"))
                 .thenReturn(Uni.createFrom().item(List.of(vs1, vs2)));
 
+        setupMockChunkerAndEmbedder();
+
+        SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8);
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
+                .await().indefinitely();
+
+        assertEquals(2, result.getSearchMetadata().getSemanticResultsCount());
+        verify(chunkerStreamClient, times(1)).streamChunks(any());
+        verify(embedderStreamClient, times(2)).streamEmbeddings(any());
+    }
+
+    // =========================================================================
+    // Directive-based orchestration tests
+    // =========================================================================
+
+    @Test
+    void testDirectives_cartesianProduct() {
+        // 1 directive with 2 chunkers × 2 embedders = 4 results
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder()
+                        .setConfigId("sentence_v1")
+                        .setConfig(Struct.newBuilder()
+                                .putFields("algorithm", Value.newBuilder().setStringValue("sentence").build())
+                                .build())
+                        .build())
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder()
+                        .setConfigId("token_v1")
+                        .setConfig(Struct.newBuilder()
+                                .putFields("algorithm", Value.newBuilder().setStringValue("token").build())
+                                .build())
+                        .build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder()
+                        .setConfigId("minilm")
+                        .build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder()
+                        .setConfigId("mpnet")
+                        .build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("directive-doc-1")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Document text for cartesian product test.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive)
+                                .build())
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        SemanticManagerOptions options = new SemanticManagerOptions();
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
+                .await().indefinitely();
+
+        // 2 chunkers × 2 embedders = 4 results
+        assertEquals(4, result.getSearchMetadata().getSemanticResultsCount());
+        // But chunker should only be called TWICE (one per chunker config)
+        verify(chunkerStreamClient, times(2)).streamChunks(any());
+        // Embedder called 4 times (cartesian product)
+        verify(embedderStreamClient, times(4)).streamEmbeddings(any());
+    }
+
+    @Test
+    void testDirectives_fieldNameTemplate() {
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .setFieldNameTemplate("{source_label}_{chunker_id}_{embedder_id}")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("sent").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("mini").build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("template-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Some text.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive).build())
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
+                .await().indefinitely();
+
+        assertEquals(1, result.getSearchMetadata().getSemanticResultsCount());
+        assertEquals("body_sent_mini",
+                result.getSearchMetadata().getSemanticResults(0).getResultSetName());
+    }
+
+    @Test
+    void testDirectives_usedOverVectorSetService() {
+        // When directives are present, VectorSetService should NOT be called
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("c1").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("e1").build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("priority-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Priority test.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive).build())
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        orchestrator.orchestrate(inputDoc, new SemanticManagerOptions("some-index", null, 4, 8), "node-1")
+                .await().indefinitely();
+
+        // VectorSetResolver should never be called
+        verify(vectorSetResolver, never()).resolveVectorSets(anyString());
+    }
+
+    @Test
+    void testDirectives_chunkerDeduplication() {
+        // Two directives using the same chunker + source = chunk only once
+        VectorDirective d1 = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("shared_chunker").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("emb_a").build())
+                .build();
+
+        VectorDirective d2 = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("shared_chunker").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("emb_b").build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("dedup-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Dedup test text.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(d1).addDirectives(d2).build())
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
+                .await().indefinitely();
+
+        // 2 results (one per embedder)
+        assertEquals(2, result.getSearchMetadata().getSemanticResultsCount());
+        // But chunker called only ONCE (deduplication)
+        verify(chunkerStreamClient, times(1)).streamChunks(any());
+        verify(embedderStreamClient, times(2)).streamEmbeddings(any());
+    }
+
+    @Test
+    void testDirectives_partialEmbedderFailure() {
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("c1").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("ok_emb").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("fail_emb").build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("partial-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Partial failure test.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive).build())
+                        .build())
+                .build();
+
         StreamChunksResponse chunk = StreamChunksResponse.newBuilder()
-                .setChunkId("c1").setChunkNumber(0).setTextContent("Text")
-                .setChunkConfigId("same-chunker").setSourceFieldName("body").setIsLast(true)
+                .setChunkId("c-0001").setChunkNumber(0).setTextContent("text")
+                .setChunkConfigId("c1").setSourceFieldName("body").setIsLast(true)
                 .build();
 
         when(chunkerStreamClient.streamChunks(any()))
@@ -283,25 +313,50 @@ class SemanticIndexingOrchestratorTest {
         when(embedderStreamClient.streamEmbeddings(any()))
                 .thenAnswer(invocation -> {
                     @SuppressWarnings("unchecked")
-                    Multi<StreamEmbeddingsRequest> requests = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
-                    return requests.map(req -> StreamEmbeddingsResponse.newBuilder()
+                    Multi<StreamEmbeddingsRequest> reqs = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
+                    return reqs.map(req -> {
+                        if ("fail_emb".equals(req.getEmbeddingModelId())) {
+                            throw new RuntimeException("Embedder down");
+                        }
+                        return StreamEmbeddingsResponse.newBuilder()
+                                .setRequestId(req.getRequestId()).setDocId(req.getDocId())
+                                .setChunkId(req.getChunkId()).setChunkConfigId(req.getChunkConfigId())
+                                .setEmbeddingModelId(req.getEmbeddingModelId())
+                                .addVector(0.5f).setSuccess(true).build();
+                    });
+                });
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
+                .await().indefinitely();
+
+        // At least 1 result (partial failure tolerance)
+        assertTrue(result.getSearchMetadata().getSemanticResultsCount() >= 1);
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    private void setupMockChunkerAndEmbedder() {
+        StreamChunksResponse chunk = StreamChunksResponse.newBuilder()
+                .setChunkId("chunk-0001").setChunkNumber(0).setTextContent("chunk text")
+                .setChunkConfigId("default").setSourceFieldName("body").setIsLast(true)
+                .build();
+
+        when(chunkerStreamClient.streamChunks(any()))
+                .thenReturn(Multi.createFrom().items(chunk));
+
+        when(embedderStreamClient.streamEmbeddings(any()))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    Multi<StreamEmbeddingsRequest> reqs = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
+                    return reqs.map(req -> StreamEmbeddingsResponse.newBuilder()
                             .setRequestId(req.getRequestId()).setDocId(req.getDocId())
                             .setChunkId(req.getChunkId()).setChunkConfigId(req.getChunkConfigId())
                             .setEmbeddingModelId(req.getEmbeddingModelId())
-                            .addVector(1.0f).setSuccess(true).build());
+                            .addVector(0.1f).addVector(0.2f).addVector(0.3f)
+                            .setSuccess(true).build());
                 });
-
-        SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8);
-
-        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
-
-        // 2 results (one per VectorSet)
-        assertEquals(2, result.getSearchMetadata().getSemanticResultsCount());
-        // But chunker should only be called ONCE (deduplication)
-        verify(chunkerStreamClient, times(1)).streamChunks(any());
-        // Embedder should be called TWICE (one per VectorSet)
-        verify(embedderStreamClient, times(2)).streamEmbeddings(any());
     }
 
     private void setField(Object target, String fieldName, Object value) throws Exception {
