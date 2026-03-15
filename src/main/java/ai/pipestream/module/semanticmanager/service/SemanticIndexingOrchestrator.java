@@ -1,7 +1,10 @@
 package ai.pipestream.module.semanticmanager.service;
 
 import ai.pipestream.data.v1.*;
+import ai.pipestream.module.semanticmanager.config.DirectiveConfig;
 import ai.pipestream.module.semanticmanager.config.SemanticManagerOptions;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.protobuf.util.JsonFormat;
 import ai.pipestream.opensearch.v1.VectorSet;
 import ai.pipestream.semantic.v1.StreamChunksRequest;
 import ai.pipestream.semantic.v1.StreamChunksResponse;
@@ -58,15 +61,22 @@ public class SemanticIndexingOrchestrator {
     public Uni<PipeDoc> orchestrate(PipeDoc inputDoc, SemanticManagerOptions options, String nodeId) {
         String docId = inputDoc.getDocId();
 
-        // Primary: use directives from the doc if present
+        // Priority 1: use directives from the doc if present
         if (hasDirectives(inputDoc)) {
             log.info("Using VectorSetDirectives from doc: {} ({} directives)",
                     docId, inputDoc.getSearchMetadata().getVectorSetDirectives().getDirectivesCount());
             return orchestrateFromDirectives(inputDoc, nodeId);
         }
 
-        // Fallback: resolve from VectorSetService
-        log.info("No directives on doc: {}, falling back to VectorSetService for index: {}",
+        // Priority 2: use directives from module config (node custom_config)
+        if (options.hasDirectives()) {
+            log.info("Using directives from module config for doc: {} ({} directives)",
+                    docId, options.directives().size());
+            return orchestrateFromConfigDirectives(inputDoc, options, nodeId);
+        }
+
+        // Priority 3: resolve from VectorSetService
+        log.info("No directives on doc or config: {}, falling back to VectorSetService for index: {}",
                 docId, options.effectiveIndexName());
         return orchestrateFromVectorSetService(inputDoc, options, nodeId);
     }
@@ -222,6 +232,76 @@ public class SemanticIndexingOrchestrator {
                     }
                     return nonNull;
                 });
+    }
+
+    // =========================================================================
+    // Config-based orchestration (directives from module config)
+    // =========================================================================
+
+    private Uni<PipeDoc> orchestrateFromConfigDirectives(PipeDoc inputDoc,
+                                                          SemanticManagerOptions options,
+                                                          String nodeId) {
+        // Convert DirectiveConfig list → VectorSetDirectives proto, set on doc, delegate
+        VectorSetDirectives.Builder directivesBuilder = VectorSetDirectives.newBuilder();
+
+        for (DirectiveConfig dc : options.directives()) {
+            VectorDirective.Builder vd = VectorDirective.newBuilder()
+                    .setSourceLabel(dc.sourceLabel() != null ? dc.sourceLabel() : "")
+                    .setCelSelector(dc.celSelector() != null ? dc.celSelector() : "");
+
+            if (dc.fieldNameTemplate() != null) {
+                vd.setFieldNameTemplate(dc.fieldNameTemplate());
+            }
+
+            if (dc.chunkerConfigs() != null) {
+                for (DirectiveConfig.NamedConfig cc : dc.chunkerConfigs()) {
+                    NamedChunkerConfig.Builder ncb = NamedChunkerConfig.newBuilder()
+                            .setConfigId(cc.configId() != null ? cc.configId() : "default");
+                    if (cc.config() != null) {
+                        try {
+                            ObjectMapper mapper = new ObjectMapper();
+                            String json = mapper.writeValueAsString(cc.config());
+                            Struct.Builder sb = Struct.newBuilder();
+                            JsonFormat.parser().ignoringUnknownFields().merge(json, sb);
+                            ncb.setConfig(sb.build());
+                        } catch (Exception e) {
+                            log.warn("Failed to parse chunker config for '{}': {}", cc.configId(), e.getMessage());
+                        }
+                    }
+                    vd.addChunkerConfigs(ncb.build());
+                }
+            }
+
+            if (dc.embedderConfigs() != null) {
+                for (DirectiveConfig.NamedConfig ec : dc.embedderConfigs()) {
+                    NamedEmbedderConfig.Builder neb = NamedEmbedderConfig.newBuilder()
+                            .setConfigId(ec.configId() != null ? ec.configId() : "default");
+                    if (ec.config() != null) {
+                        try {
+                            ObjectMapper mapper = new ObjectMapper();
+                            String json = mapper.writeValueAsString(ec.config());
+                            Struct.Builder sb = Struct.newBuilder();
+                            JsonFormat.parser().ignoringUnknownFields().merge(json, sb);
+                            neb.setConfig(sb.build());
+                        } catch (Exception e) {
+                            log.warn("Failed to parse embedder config for '{}': {}", ec.configId(), e.getMessage());
+                        }
+                    }
+                    vd.addEmbedderConfigs(neb.build());
+                }
+            }
+
+            directivesBuilder.addDirectives(vd.build());
+        }
+
+        // Set directives on doc and delegate to the existing directive-based orchestration
+        PipeDoc docWithDirectives = inputDoc.toBuilder()
+                .setSearchMetadata(inputDoc.getSearchMetadata().toBuilder()
+                        .setVectorSetDirectives(directivesBuilder.build())
+                        .build())
+                .build();
+
+        return orchestrateFromDirectives(docWithDirectives, nodeId);
     }
 
     // =========================================================================

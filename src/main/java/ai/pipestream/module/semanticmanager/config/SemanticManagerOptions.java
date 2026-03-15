@@ -12,14 +12,19 @@ public record SemanticManagerOptions(
         @JsonProperty("index_name") String indexName,
         @JsonProperty("vector_set_ids") List<String> vectorSetIds,
         @JsonProperty("max_concurrent_chunkers") Integer maxConcurrentChunkers,
-        @JsonProperty("max_concurrent_embedders") Integer maxConcurrentEmbedders
+        @JsonProperty("max_concurrent_embedders") Integer maxConcurrentEmbedders,
+        @JsonProperty("directives") List<DirectiveConfig> directives
 ) {
     public static final String DEFAULT_INDEX_NAME = "default-index";
     public static final int DEFAULT_MAX_CONCURRENT_CHUNKERS = 4;
     public static final int DEFAULT_MAX_CONCURRENT_EMBEDDERS = 8;
 
     public SemanticManagerOptions() {
-        this(DEFAULT_INDEX_NAME, null, DEFAULT_MAX_CONCURRENT_CHUNKERS, DEFAULT_MAX_CONCURRENT_EMBEDDERS);
+        this(DEFAULT_INDEX_NAME, null, DEFAULT_MAX_CONCURRENT_CHUNKERS, DEFAULT_MAX_CONCURRENT_EMBEDDERS, null);
+    }
+
+    public boolean hasDirectives() {
+        return directives != null && !directives.isEmpty();
     }
 
     public String effectiveIndexName() {
