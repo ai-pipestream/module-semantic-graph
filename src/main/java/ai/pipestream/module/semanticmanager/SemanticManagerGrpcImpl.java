@@ -1,6 +1,10 @@
 package ai.pipestream.module.semanticmanager;
 
 import ai.pipestream.data.module.v1.*;
+import ai.pipestream.data.v1.LogEntry;
+import ai.pipestream.data.v1.LogEntrySource;
+import ai.pipestream.data.v1.LogLevel;
+import ai.pipestream.data.v1.ModuleLogOrigin;
 import ai.pipestream.data.v1.PipeDoc;
 import ai.pipestream.data.v1.ProcessConfiguration;
 import ai.pipestream.module.semanticmanager.config.SemanticManagerOptions;
@@ -58,7 +62,7 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
             return Uni.createFrom().item(
                     ProcessDataResponse.newBuilder()
                             .setSuccess(true)
-                            .addProcessorLogs("Semantic manager: no document to process.")
+                            .addLogEntries(moduleLog("Semantic manager: no document to process.", LogLevel.LOG_LEVEL_INFO))
                             .build());
         }
 
@@ -72,7 +76,7 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
 
         // Parse configuration
         SemanticManagerOptions options = parseOptions(request.getConfig());
-        List<String> auditLogs = new java.util.ArrayList<>();
+        List<LogEntry> auditLogs = new java.util.ArrayList<>();
 
         String configSummary = String.format(
                 "Config: indexName=%s, hasDirectives=%s, directivesCount=%d",
@@ -80,7 +84,7 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                 options.hasDirectives(),
                 options.directives() != null ? options.directives().size() : 0);
         log.info(configSummary);
-        auditLogs.add(configSummary);
+        auditLogs.add(moduleLog(configSummary, LogLevel.LOG_LEVEL_INFO));
 
         if (options.hasDirectives()) {
             for (int i = 0; i < options.directives().size(); i++) {
@@ -91,7 +95,7 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                         d.chunkerConfigs() != null ? d.chunkerConfigs().size() : 0,
                         d.embedderConfigs() != null ? d.embedderConfigs().size() : 0);
                 log.info(directiveInfo);
-                auditLogs.add(directiveInfo);
+                auditLogs.add(moduleLog(directiveInfo, LogLevel.LOG_LEVEL_INFO));
             }
         }
 
@@ -108,18 +112,18 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                             "Semantic manager produced %d SemanticProcessingResults for doc: %s in %dms",
                             semanticResultCount, inputDoc.getDocId(), duration);
                     log.info(resultMsg);
-                    auditLogs.add(resultMsg);
+                    auditLogs.add(moduleLog(resultMsg, LogLevel.LOG_LEVEL_INFO));
 
                     if (semanticResultCount == 0 && options.hasDirectives()) {
-                        auditLogs.add("Warning: directives were provided but no results produced. " +
+                        auditLogs.add(moduleLog("Warning: directives were provided but no results produced. " +
                                 "Check that chunker and embedder services are running and registered " +
-                                "with the correct Consul service names.");
+                                "with the correct Consul service names.", LogLevel.LOG_LEVEL_WARN));
                     }
 
                     return ProcessDataResponse.newBuilder()
                             .setSuccess(true)
                             .setOutputDoc(enrichedDoc)
-                            .addAllProcessorLogs(auditLogs)
+                            .addAllLogEntries(auditLogs)
                             .build();
                 });
     }
@@ -165,10 +169,20 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
         return Uni.createFrom().item(responseBuilder.build());
     }
 
+    private static LogEntry moduleLog(String message, LogLevel level) {
+        return LogEntry.newBuilder()
+            .setSource(LogEntrySource.LOG_ENTRY_SOURCE_MODULE)
+            .setLevel(level)
+            .setMessage(message)
+            .setTimestampEpochMs(System.currentTimeMillis())
+            .setModule(ModuleLogOrigin.newBuilder().setModuleName("semantic-manager").build())
+            .build();
+    }
+
     private ProcessDataResponse createErrorResponse(String errorMessage, Throwable e) {
         ProcessDataResponse.Builder responseBuilder = ProcessDataResponse.newBuilder();
         responseBuilder.setSuccess(false);
-        responseBuilder.addProcessorLogs(errorMessage);
+        responseBuilder.addLogEntries(moduleLog(errorMessage, LogLevel.LOG_LEVEL_ERROR));
 
         Struct.Builder errorDetailsBuilder = Struct.newBuilder();
         errorDetailsBuilder.putFields("error_message",
