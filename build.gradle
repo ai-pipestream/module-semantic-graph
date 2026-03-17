@@ -1,4 +1,3 @@
-import org.apache.tools.ant.filters.ReplaceTokens
 import org.gradle.plugins.signing.Sign
 
 plugins {
@@ -117,23 +116,6 @@ tasks.withType(Javadoc).configureEach { task ->
     opts.locale = 'en'
     opts.addStringOption('Xdoclint:-missing', '-quiet')
     task.exclude('**/internal/**', '**/impl/**', '**/test/**')
-}
-
-// Enable resource filtering to replace @version@ in application.properties
-processResources {
-    filesMatching('**/*.properties') {
-        filter(ReplaceTokens, tokens: [
-            version: project.version.toString()
-        ])
-    }
-}
-
-processTestResources {
-    filesMatching('**/*.properties') {
-        filter(ReplaceTokens, tokens: [
-            version: project.version.toString()
-        ])
-    }
 }
 
 quarkusDev {
