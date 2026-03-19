@@ -334,6 +334,246 @@ class SemanticIndexingOrchestratorTest {
     }
 
     // =========================================================================
+    // Field-level (no-chunk) orchestration tests
+    // =========================================================================
+
+    @Test
+    void testFieldLevel_noChunkerConfigs_skipsChunkerCallsEmbedder() {
+        // Directive with 0 chunker_configs and 1 embedder config → field-level path
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                // No chunker configs → field-level
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder()
+                        .setConfigId("all-MiniLM-L6-v2")
+                        .build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("field-level-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Full body text for field-level embedding.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive).build())
+                        .build())
+                .build();
+
+        // Only set up the embedder mock (chunker should NOT be called)
+        when(embedderStreamClient.streamEmbeddings(any()))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    Multi<StreamEmbeddingsRequest> reqs = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
+                    return reqs.map(req -> StreamEmbeddingsResponse.newBuilder()
+                            .setRequestId(req.getRequestId()).setDocId(req.getDocId())
+                            .setChunkId(req.getChunkId()).setChunkConfigId(req.getChunkConfigId())
+                            .setEmbeddingModelId(req.getEmbeddingModelId())
+                            .addVector(0.5f).addVector(0.6f).addVector(0.7f)
+                            .setSuccess(true).build());
+                });
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
+                .await().indefinitely();
+
+        // Chunker should NOT have been called
+        verify(chunkerStreamClient, never()).streamChunks(any());
+        // Embedder should have been called exactly once
+        verify(embedderStreamClient, times(1)).streamEmbeddings(any());
+
+        // Should have 1 semantic result
+        assertEquals(1, result.getSearchMetadata().getSemanticResultsCount());
+        SemanticProcessingResult spr = result.getSearchMetadata().getSemanticResults(0);
+        assertEquals("body", spr.getSourceFieldName());
+        assertEquals("all-MiniLM-L6-v2", spr.getEmbeddingConfigId());
+
+        // Should have exactly 1 chunk (the full field)
+        assertEquals(1, spr.getChunksCount());
+        SemanticChunk chunk = spr.getChunks(0);
+        assertEquals("field-level-doc_body_full", chunk.getChunkId());
+        assertEquals(0, chunk.getChunkNumber());
+        assertEquals("Full body text for field-level embedding.", chunk.getEmbeddingInfo().getTextContent());
+        assertEquals(3, chunk.getEmbeddingInfo().getVectorCount());
+    }
+
+    @Test
+    void testFieldLevel_multipleEmbeddersNoChunker() {
+        // 1 directive with 0 chunkers × 2 embedders = 2 field-level results
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("model-a").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("model-b").build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("multi-emb-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Text for multi-embedder field-level test.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive).build())
+                        .build())
+                .build();
+
+        when(embedderStreamClient.streamEmbeddings(any()))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    Multi<StreamEmbeddingsRequest> reqs = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
+                    return reqs.map(req -> StreamEmbeddingsResponse.newBuilder()
+                            .setRequestId(req.getRequestId()).setDocId(req.getDocId())
+                            .setChunkId(req.getChunkId()).setChunkConfigId(req.getChunkConfigId())
+                            .setEmbeddingModelId(req.getEmbeddingModelId())
+                            .addVector(0.1f).setSuccess(true).build());
+                });
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
+                .await().indefinitely();
+
+        verify(chunkerStreamClient, never()).streamChunks(any());
+        verify(embedderStreamClient, times(2)).streamEmbeddings(any());
+        assertEquals(2, result.getSearchMetadata().getSemanticResultsCount());
+    }
+
+    @Test
+    void testFieldLevel_mixedDirectives_bothPathsRun() {
+        // Directive 1: has chunker (standard path)
+        VectorDirective d1 = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("chunker-1").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("emb-a").build())
+                .build();
+
+        // Directive 2: no chunker (field-level path)
+        VectorDirective d2 = VectorDirective.newBuilder()
+                .setSourceLabel("title")
+                .setCelSelector("document.search_metadata.title")
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("emb-b").build())
+                .build();
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("mixed-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Body text.")
+                        .setTitle("Title text.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(d1).addDirectives(d2).build())
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
+                .await().indefinitely();
+
+        // d1 uses chunker, d2 skips chunker
+        verify(chunkerStreamClient, times(1)).streamChunks(any());
+        verify(embedderStreamClient, times(2)).streamEmbeddings(any());
+
+        // 2 total results (1 chunked + 1 field-level)
+        assertEquals(2, result.getSearchMetadata().getSemanticResultsCount());
+    }
+
+    // =========================================================================
+    // Convenience fields tests
+    // =========================================================================
+
+    @Test
+    void testConvenienceFields_skipChunking_producesFieldLevelResult() {
+        // Use convenience fields: skip_chunking=true, source_field=body, model=mini
+        SemanticManagerOptions options = new SemanticManagerOptions(
+                "test-index", null, 4, 8, null,
+                "body", null, null, null, "all-MiniLM-L6-v2", true, null);
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("convenience-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Body text for convenience field test.")
+                        .build())
+                .build();
+
+        when(embedderStreamClient.streamEmbeddings(any()))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    Multi<StreamEmbeddingsRequest> reqs = (Multi<StreamEmbeddingsRequest>) invocation.getArgument(0);
+                    return reqs.map(req -> StreamEmbeddingsResponse.newBuilder()
+                            .setRequestId(req.getRequestId()).setDocId(req.getDocId())
+                            .setChunkId(req.getChunkId()).setChunkConfigId(req.getChunkConfigId())
+                            .setEmbeddingModelId(req.getEmbeddingModelId())
+                            .addVector(0.4f).addVector(0.5f)
+                            .setSuccess(true).build());
+                });
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
+                .await().indefinitely();
+
+        // skip_chunking=true → chunker should not be called
+        verify(chunkerStreamClient, never()).streamChunks(any());
+        verify(embedderStreamClient, times(1)).streamEmbeddings(any());
+
+        assertEquals(1, result.getSearchMetadata().getSemanticResultsCount());
+        SemanticProcessingResult spr = result.getSearchMetadata().getSemanticResults(0);
+        assertEquals("body", spr.getSourceFieldName());
+        assertEquals("all-MiniLM-L6-v2", spr.getEmbeddingConfigId());
+        assertEquals(1, spr.getChunksCount());
+    }
+
+    @Test
+    void testConvenienceFields_withChunking_producesChunkedResult() {
+        // Convenience fields with chunking (skip_chunking defaults to false)
+        SemanticManagerOptions options = new SemanticManagerOptions(
+                "test-index", null, 4, 8, null,
+                "body", 200, 20, "SENTENCE", "all-MiniLM-L6-v2", false, null);
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("convenience-chunk-doc")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Body text for chunked convenience test.")
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
+                .await().indefinitely();
+
+        // With chunking → chunker should be called
+        verify(chunkerStreamClient, times(1)).streamChunks(any());
+        verify(embedderStreamClient, times(1)).streamEmbeddings(any());
+        assertEquals(1, result.getSearchMetadata().getSemanticResultsCount());
+    }
+
+    @Test
+    void testConvenienceFields_explicitDirectivesTakePriority() {
+        // Both explicit directives AND convenience fields set — directives should win
+        var directiveConfig = new ai.pipestream.module.semanticmanager.config.DirectiveConfig(
+                "body", "document.search_metadata.body",
+                List.of(new ai.pipestream.module.semanticmanager.config.DirectiveConfig.NamedConfig("chunker-x", null)),
+                List.of(new ai.pipestream.module.semanticmanager.config.DirectiveConfig.NamedConfig("emb-x", null)),
+                null);
+
+        SemanticManagerOptions options = new SemanticManagerOptions(
+                "test-index", null, 4, 8, List.of(directiveConfig),
+                "title", null, null, null, "some-other-model", true, null);
+
+        PipeDoc inputDoc = PipeDoc.newBuilder()
+                .setDocId("priority-doc-2")
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Body text.")
+                        .setTitle("Title text.")
+                        .build())
+                .build();
+
+        setupMockChunkerAndEmbedder();
+
+        PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
+                .await().indefinitely();
+
+        // Explicit directives used — should chunk 'body' with chunker-x, not skip chunking on 'title'
+        verify(chunkerStreamClient, times(1)).streamChunks(any());
+        assertEquals(1, result.getSearchMetadata().getSemanticResultsCount());
+        assertEquals("body", result.getSearchMetadata().getSemanticResults(0).getSourceFieldName());
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 

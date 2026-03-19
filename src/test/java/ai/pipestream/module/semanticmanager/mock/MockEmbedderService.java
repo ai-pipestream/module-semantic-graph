@@ -1,8 +1,11 @@
 package ai.pipestream.module.semanticmanager.mock;
 
+import ai.pipestream.semantic.v1.ListEmbeddingModelsRequest;
+import ai.pipestream.semantic.v1.ListEmbeddingModelsResponse;
 import ai.pipestream.semantic.v1.SemanticEmbedderService;
 import ai.pipestream.semantic.v1.StreamEmbeddingsRequest;
 import ai.pipestream.semantic.v1.StreamEmbeddingsResponse;
+import io.smallrye.mutiny.Uni;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import jakarta.inject.Singleton;
@@ -48,6 +51,11 @@ public class MockEmbedderService implements SemanticEmbedderService {
 
             return builder.build();
         });
+    }
+
+    @Override
+    public Uni<ListEmbeddingModelsResponse> listEmbeddingModels(ListEmbeddingModelsRequest request) {
+        return Uni.createFrom().item(ListEmbeddingModelsResponse.newBuilder().build());
     }
 
     private int getDimensions(String modelId) {

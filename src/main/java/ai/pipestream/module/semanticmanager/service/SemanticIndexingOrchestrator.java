@@ -75,6 +75,18 @@ public class SemanticIndexingOrchestrator {
             return orchestrateFromConfigDirectives(inputDoc, options, nodeId);
         }
 
+        // Priority 2.5: if no explicit directives but convenience fields are set, build an implicit directive
+        if (options.hasConvenienceFields()) {
+            log.info("Building implicit directive from convenience fields for doc: {} (source_field={}, skip_chunking={}, model={})",
+                    docId, options.sourceField(), options.skipChunking(), options.embeddingModel());
+            DirectiveConfig implicit = options.toImplicitDirective();
+            SemanticManagerOptions implicitOptions = new SemanticManagerOptions(
+                    options.indexName(), options.vectorSetIds(),
+                    options.maxConcurrentChunkers(), options.maxConcurrentEmbedders(),
+                    java.util.List.of(implicit));
+            return orchestrateFromConfigDirectives(inputDoc, implicitOptions, nodeId);
+        }
+
         // Priority 3: resolve from VectorSetService
         log.info("No directives on doc or config: {}, falling back to VectorSetService for index: {}",
                 docId, options.effectiveIndexName());
@@ -98,6 +110,7 @@ public class SemanticIndexingOrchestrator {
         // Build the work items: one per (directive, chunker_config, embedder_config) triple
         // but deduplicate chunking by (chunker_config_id, source_label)
         Map<DirectiveChunkingKey, DirectiveChunkingGroup> chunkingGroups = new LinkedHashMap<>();
+        List<FieldLevelTarget> fieldLevelTargets = new ArrayList<>();
 
         for (VectorDirective directive : directives.getDirectivesList()) {
             String sourceLabel = directive.getSourceLabel();
@@ -112,28 +125,39 @@ public class SemanticIndexingOrchestrator {
             String template = directive.hasFieldNameTemplate()
                     ? directive.getFieldNameTemplate() : DEFAULT_FIELD_NAME_TEMPLATE;
 
-            for (NamedChunkerConfig chunkerCfg : directive.getChunkerConfigsList()) {
-                DirectiveChunkingKey key = new DirectiveChunkingKey(chunkerCfg.getConfigId(), sourceLabel);
-
-                DirectiveChunkingGroup group = chunkingGroups.computeIfAbsent(key,
-                        k -> new DirectiveChunkingGroup(sourceText, sourceLabel,
-                                chunkerCfg.getConfigId(), chunkerCfg.getConfig(),
-                                new ArrayList<>()));
-
-                // Each embedder config in this directive gets paired with this chunker
+            if (directive.getChunkerConfigsCount() == 0) {
+                // Field-level: no chunking, embed raw text directly
                 for (NamedEmbedderConfig embedderCfg : directive.getEmbedderConfigsList()) {
-                    group.embedderTargets().add(new EmbedderTarget(
+                    fieldLevelTargets.add(new FieldLevelTarget(
+                            sourceText, sourceLabel,
                             embedderCfg.getConfigId(), embedderCfg.getConfig(), template));
+                }
+            } else {
+                // Standard chunking path
+                for (NamedChunkerConfig chunkerCfg : directive.getChunkerConfigsList()) {
+                    DirectiveChunkingKey key = new DirectiveChunkingKey(chunkerCfg.getConfigId(), sourceLabel);
+
+                    DirectiveChunkingGroup group = chunkingGroups.computeIfAbsent(key,
+                            k -> new DirectiveChunkingGroup(sourceText, sourceLabel,
+                                    chunkerCfg.getConfigId(), chunkerCfg.getConfig(),
+                                    new ArrayList<>()));
+
+                    // Each embedder config in this directive gets paired with this chunker
+                    for (NamedEmbedderConfig embedderCfg : directive.getEmbedderConfigsList()) {
+                        group.embedderTargets().add(new EmbedderTarget(
+                                embedderCfg.getConfigId(), embedderCfg.getConfig(), template));
+                    }
                 }
             }
         }
 
-        if (chunkingGroups.isEmpty()) {
+        if (chunkingGroups.isEmpty() && fieldLevelTargets.isEmpty()) {
             log.warn("No valid directives produced work items for doc: {}", docId);
             return Uni.createFrom().item(inputDoc);
         }
 
-        log.info("Directive orchestration: {} chunking groups for doc: {}", chunkingGroups.size(), docId);
+        log.info("Directive orchestration: {} chunking groups, {} field-level targets for doc: {}",
+                chunkingGroups.size(), fieldLevelTargets.size(), docId);
 
         // Process each chunking group
         List<Uni<List<AssemblyOutput>>> groupUnis = new ArrayList<>();
@@ -141,7 +165,84 @@ public class SemanticIndexingOrchestrator {
             groupUnis.add(processDirectiveGroup(inputDoc, group, nodeId));
         }
 
+        // Process field-level targets (no chunking)
+        if (!fieldLevelTargets.isEmpty()) {
+            groupUnis.add(processFieldLevelTargets(inputDoc, fieldLevelTargets, nodeId));
+        }
+
         return combineResults(inputDoc, groupUnis);
+    }
+
+    /**
+     * Processes field-level targets — embeds raw field text without chunking.
+     * Each target produces a SemanticProcessingResult with a single chunk containing the full text.
+     * The chunker is bypassed entirely; text goes directly to each embedder as a single request.
+     */
+    private Uni<List<AssemblyOutput>> processFieldLevelTargets(
+            PipeDoc inputDoc, List<FieldLevelTarget> targets, String nodeId) {
+
+        String docId = inputDoc.getDocId();
+        String requestId = UUID.randomUUID().toString();
+
+        List<Uni<AssemblyOutput>> embedderUnis = new ArrayList<>();
+
+        for (FieldLevelTarget target : targets) {
+            String resultSetName = resolveResultSetName(target.template(), target.sourceLabel(),
+                    "field_level", target.embedderConfigId());
+
+            // Build a single embedding request for the full field text
+            StreamEmbeddingsRequest embReq = StreamEmbeddingsRequest.newBuilder()
+                    .setRequestId(requestId)
+                    .setDocId(docId)
+                    .setChunkId(docId + "_" + target.sourceLabel() + "_full")
+                    .setTextContent(target.sourceText())
+                    .setChunkConfigId("field_level")
+                    .setEmbeddingModelId(target.embedderConfigId())
+                    .build();
+
+            Multi<StreamEmbeddingsRequest> singleRequest = Multi.createFrom().item(embReq);
+
+            embedderUnis.add(
+                    embedderStreamClient.streamEmbeddings(singleRequest)
+                            .collect().asList()
+                            .map(responses -> {
+                                // Build a synthetic chunk for the full field
+                                String chunkId = docId + "_" + target.sourceLabel() + "_full";
+
+                                StreamChunksResponse syntheticChunk = StreamChunksResponse.newBuilder()
+                                        .setChunkId(chunkId)
+                                        .setChunkNumber(0)
+                                        .setTextContent(target.sourceText())
+                                        .setChunkConfigId("field_level")
+                                        .setSourceFieldName(target.sourceLabel())
+                                        .setStartOffset(0)
+                                        .setEndOffset(target.sourceText().length())
+                                        .setIsLast(true)
+                                        .build();
+
+                                return assembleResult(
+                                        List.of(syntheticChunk), responses,
+                                        target.sourceLabel(), "field_level",
+                                        target.embedderConfigId(), resultSetName, nodeId);
+                            })
+                            .onFailure().recoverWithItem(error -> {
+                                log.error("Field-level embedder {} failed for doc {}: {}",
+                                        target.embedderConfigId(), docId, error.getMessage());
+                                return null;
+                            })
+            );
+        }
+
+        return Uni.combine().all().unis(embedderUnis)
+                .with(results -> {
+                    List<AssemblyOutput> nonNull = new ArrayList<>();
+                    for (Object r : results) {
+                        if (r != null) {
+                            nonNull.add((AssemblyOutput) r);
+                        }
+                    }
+                    return nonNull;
+                });
     }
 
     /**
@@ -659,4 +760,12 @@ public class SemanticIndexingOrchestrator {
     ) {}
 
     record EmbedderTarget(String embedderConfigId, Struct embedderConfig, String template) {}
+
+    record FieldLevelTarget(
+            String sourceText,
+            String sourceLabel,
+            String embedderConfigId,
+            Struct embedderConfig,
+            String template
+    ) {}
 }

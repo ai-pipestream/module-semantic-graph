@@ -83,10 +83,11 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
         List<LogEntry> auditLogs = new java.util.ArrayList<>();
 
         String configSummary = String.format(
-                "Config: indexName=%s, hasDirectives=%s, directivesCount=%d",
+                "Config: indexName=%s, hasDirectives=%s, directivesCount=%d, hasConvenienceFields=%s",
                 options.effectiveIndexName(),
                 options.hasDirectives(),
-                options.directives() != null ? options.directives().size() : 0);
+                options.directives() != null ? options.directives().size() : 0,
+                options.hasConvenienceFields());
         log.info(configSummary);
         auditLogs.add(moduleLog(configSummary, LogLevel.LOG_LEVEL_INFO));
 
@@ -101,6 +102,12 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                 log.info(directiveInfo);
                 auditLogs.add(moduleLog(directiveInfo, LogLevel.LOG_LEVEL_INFO));
             }
+        } else if (options.hasConvenienceFields()) {
+            String convenienceInfo = String.format(
+                    "Convenience fields: source_field=%s, skip_chunking=%s, embedding_model=%s, chunk_size=%s",
+                    options.sourceField(), options.skipChunking(), options.embeddingModel(), options.chunkSize());
+            log.info(convenienceInfo);
+            auditLogs.add(moduleLog(convenienceInfo, LogLevel.LOG_LEVEL_INFO));
         }
 
         // Run orchestration
