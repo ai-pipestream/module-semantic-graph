@@ -273,27 +273,21 @@ public class SemanticIndexingOrchestrator {
             reqBuilder.setChunkerConfig(group.chunkerConfig());
         }
 
-        // Open the chunker stream and broadcast to all embedders.
-        // Side-collect chunks for result assembly (CopyOnWriteArrayList for thread safety).
+        // Collect chunks for result assembly
         List<StreamChunksResponse> collectedChunks = new CopyOnWriteArrayList<>();
 
-        Multi<StreamChunksResponse> chunkStream = chunkerStreamClient.streamChunks(reqBuilder.build())
-                .onItem().invoke(collectedChunks::add);
-
-        // Broadcast: each embedder subscribes to the same chunk stream.
-        // broadcast().toAtLeast(N) waits for N subscribers before items flow,
-        // guaranteeing every embedder sees every chunk.
-        Multi<StreamChunksResponse> broadcast = chunkStream
-                .broadcast().toAtLeast(targets.size());
-
-        // Wire up all embedder pipelines concurrently
+        // Create one emitter per embedder — chunks are pushed to ALL emitters as they arrive.
+        // Each emitter feeds directly into its embedder's bidirectional stream, so chunking
+        // and embedding happen concurrently (no buffering, no phase-locking).
+        List<io.smallrye.mutiny.subscription.MultiEmitter<? super StreamChunksResponse>> emitters = new CopyOnWriteArrayList<>();
         List<Uni<AssemblyOutput>> embedderUnis = new ArrayList<>();
+
         for (EmbedderTarget target : targets) {
             String resultSetName = resolveResultSetName(target.template(), group.sourceLabel(),
                     group.chunkerConfigId(), target.embedderConfigId());
 
-            // Each subscriber gets the full chunk stream and pipelines to its embedder
-            Multi<StreamEmbeddingsRequest> embeddingRequests = broadcast
+            Multi<StreamEmbeddingsRequest> embeddingRequests = Multi.createFrom()
+                    .<StreamChunksResponse>emitter(emitters::add)
                     .map(chunk -> {
                         StreamEmbeddingsRequest.Builder builder = StreamEmbeddingsRequest.newBuilder()
                                 .setRequestId(requestId)
@@ -322,6 +316,28 @@ public class SemanticIndexingOrchestrator {
                             })
             );
         }
+
+        // Start the chunker stream. As each chunk arrives, fan out to every embedder emitter immediately.
+        chunkerStreamClient.streamChunks(reqBuilder.build())
+                .subscribe().with(
+                        chunk -> {
+                            collectedChunks.add(chunk);
+                            for (var emitter : emitters) {
+                                emitter.emit(chunk);
+                            }
+                        },
+                        error -> {
+                            log.error("Chunker failed for doc {}: {}", docId, error.getMessage());
+                            for (var emitter : emitters) {
+                                emitter.fail(error);
+                            }
+                        },
+                        () -> {
+                            for (var emitter : emitters) {
+                                emitter.complete();
+                            }
+                        }
+                );
 
         return Uni.combine().all().unis(embedderUnis)
                 .with(results -> {
@@ -465,19 +481,15 @@ public class SemanticIndexingOrchestrator {
                 .setChunkConfigId(key.chunkerConfigId())
                 .build();
 
-        // Open the chunker stream and side-collect for result assembly
         List<StreamChunksResponse> collectedChunks = new CopyOnWriteArrayList<>();
 
-        Multi<StreamChunksResponse> chunkStream = chunkerStreamClient.streamChunks(chunksRequest)
-                .onItem().invoke(collectedChunks::add);
-
-        // Broadcast to all VectorSet embedders
-        Multi<StreamChunksResponse> broadcast = chunkStream
-                .broadcast().toAtLeast(vectorSets.size());
-
+        // Create one emitter per VectorSet embedder — chunks fan out immediately as they arrive
+        List<io.smallrye.mutiny.subscription.MultiEmitter<? super StreamChunksResponse>> emitters = new CopyOnWriteArrayList<>();
         List<Uni<AssemblyOutput>> embedderUnis = new ArrayList<>();
+
         for (VectorSet vs : vectorSets) {
-            Multi<StreamEmbeddingsRequest> embeddingRequests = broadcast
+            Multi<StreamEmbeddingsRequest> embeddingRequests = Multi.createFrom()
+                    .<StreamChunksResponse>emitter(emitters::add)
                     .map(chunk -> StreamEmbeddingsRequest.newBuilder()
                             .setRequestId(requestId)
                             .setDocId(docId)
@@ -495,7 +507,6 @@ public class SemanticIndexingOrchestrator {
                                         collectedChunks, responses, vs.getSourceField(),
                                         key.chunkerConfigId(), vs.getEmbeddingModelConfigId(),
                                         vs.getResultSetName(), nodeId);
-                                // Add VectorSet metadata to the result
                                 SemanticProcessingResult enriched = output.result().toBuilder()
                                         .putMetadata("vector_set_id", protoValue(vs.getId()))
                                         .putMetadata("vector_set_name", protoValue(vs.getName()))
@@ -509,6 +520,28 @@ public class SemanticIndexingOrchestrator {
                             })
             );
         }
+
+        // Start chunker — fan out each chunk to every embedder emitter immediately
+        chunkerStreamClient.streamChunks(chunksRequest)
+                .subscribe().with(
+                        chunk -> {
+                            collectedChunks.add(chunk);
+                            for (var emitter : emitters) {
+                                emitter.emit(chunk);
+                            }
+                        },
+                        error -> {
+                            log.error("Chunker failed for doc {}: {}", docId, error.getMessage());
+                            for (var emitter : emitters) {
+                                emitter.fail(error);
+                            }
+                        },
+                        () -> {
+                            for (var emitter : emitters) {
+                                emitter.complete();
+                            }
+                        }
+                );
 
         return Uni.combine().all().unis(embedderUnis)
                 .with(results -> {
