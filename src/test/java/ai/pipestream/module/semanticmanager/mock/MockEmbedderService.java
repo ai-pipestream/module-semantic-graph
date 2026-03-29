@@ -1,5 +1,7 @@
 package ai.pipestream.module.semanticmanager.mock;
 
+import ai.pipestream.semantic.v1.EmbeddingModelInfo;
+import ai.pipestream.semantic.v1.EmbeddingModelStatus;
 import ai.pipestream.semantic.v1.ListEmbeddingModelsRequest;
 import ai.pipestream.semantic.v1.ListEmbeddingModelsResponse;
 import ai.pipestream.semantic.v1.SemanticEmbedderService;
@@ -18,6 +20,8 @@ import java.util.Random;
  * In-process mock embedder that returns random vectors.
  * Simulates a real embedding service without needing ML models.
  * Default dimension is 384 (MiniLM-sized), configurable by embedding model ID.
+ * <p>
+ * Reports all known models as READY via listEmbeddingModels for fail-fast validation.
  */
 @Singleton
 @GrpcService
@@ -55,7 +59,41 @@ public class MockEmbedderService implements SemanticEmbedderService {
 
     @Override
     public Uni<ListEmbeddingModelsResponse> listEmbeddingModels(ListEmbeddingModelsRequest request) {
-        return Uni.createFrom().item(ListEmbeddingModelsResponse.newBuilder().build());
+        log.info("MockEmbedder: listEmbeddingModels(readyOnly={})", request.getReadyOnly());
+
+        ListEmbeddingModelsResponse.Builder response = ListEmbeddingModelsResponse.newBuilder()
+                .addModels(EmbeddingModelInfo.newBuilder()
+                        .setModelName("all-MiniLM-L6-v2")
+                        .setDimensions(384)
+                        .setStatus(EmbeddingModelStatus.EMBEDDING_MODEL_STATUS_READY)
+                        .build())
+                .addModels(EmbeddingModelInfo.newBuilder()
+                        .setModelName("minilm")
+                        .setDimensions(384)
+                        .setStatus(EmbeddingModelStatus.EMBEDDING_MODEL_STATUS_READY)
+                        .build())
+                .addModels(EmbeddingModelInfo.newBuilder()
+                        .setModelName("all-mpnet-base-v2")
+                        .setDimensions(768)
+                        .setStatus(EmbeddingModelStatus.EMBEDDING_MODEL_STATUS_READY)
+                        .build())
+                .addModels(EmbeddingModelInfo.newBuilder()
+                        .setModelName("mpnet")
+                        .setDimensions(768)
+                        .setStatus(EmbeddingModelStatus.EMBEDDING_MODEL_STATUS_READY)
+                        .build())
+                .addModels(EmbeddingModelInfo.newBuilder()
+                        .setModelName("e5-large")
+                        .setDimensions(1024)
+                        .setStatus(EmbeddingModelStatus.EMBEDDING_MODEL_STATUS_READY)
+                        .build())
+                .addModels(EmbeddingModelInfo.newBuilder()
+                        .setModelName("e5")
+                        .setDimensions(1024)
+                        .setStatus(EmbeddingModelStatus.EMBEDDING_MODEL_STATUS_READY)
+                        .build());
+
+        return Uni.createFrom().item(response.build());
     }
 
     private int getDimensions(String modelId) {

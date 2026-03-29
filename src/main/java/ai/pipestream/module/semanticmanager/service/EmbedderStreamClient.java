@@ -1,10 +1,13 @@
 package ai.pipestream.module.semanticmanager.service;
 
 import ai.pipestream.quarkus.dynamicgrpc.GrpcClientFactory;
+import ai.pipestream.semantic.v1.ListEmbeddingModelsRequest;
+import ai.pipestream.semantic.v1.ListEmbeddingModelsResponse;
 import ai.pipestream.semantic.v1.MutinySemanticEmbedderServiceGrpc;
 import ai.pipestream.semantic.v1.StreamEmbeddingsRequest;
 import ai.pipestream.semantic.v1.StreamEmbeddingsResponse;
 import io.smallrye.mutiny.Multi;
+import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.slf4j.Logger;
@@ -32,5 +35,23 @@ public class EmbedderStreamClient {
 
         return grpcClientFactory.getClient(SERVICE_NAME, MutinySemanticEmbedderServiceGrpc::newMutinyStub)
                 .onItem().transformToMulti(stub -> stub.streamEmbeddings(requests));
+    }
+
+    /**
+     * Lists available embedding models from the embedder service.
+     * Used for fail-fast validation before starting embedding fan-out.
+     *
+     * @param readyOnly if true, only returns models with READY status
+     * @return response containing available models with their status and dimensions
+     */
+    public Uni<ListEmbeddingModelsResponse> listEmbeddingModels(boolean readyOnly) {
+        log.info("Listing embedding models (readyOnly={})", readyOnly);
+
+        ListEmbeddingModelsRequest request = ListEmbeddingModelsRequest.newBuilder()
+                .setReadyOnly(readyOnly)
+                .build();
+
+        return grpcClientFactory.getClient(SERVICE_NAME, MutinySemanticEmbedderServiceGrpc::newMutinyStub)
+                .chain(stub -> stub.listEmbeddingModels(request));
     }
 }
