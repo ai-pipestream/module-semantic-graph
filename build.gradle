@@ -67,6 +67,9 @@ dependencies {
     implementation 'ai.pipestream:pipestream-service-registration'
     implementation 'ai.pipestream:pipestream-server'
 
+    // Caching (Quarkus Cache backed by Caffeine)
+    implementation 'io.quarkus:quarkus-cache'
+
     // Protobuf JSON utilities
     implementation 'com.google.protobuf:protobuf-java-util'
 
@@ -98,6 +101,16 @@ test {
     systemProperty "java.util.logging.manager", "org.jboss.logmanager.LogManager"
     maxHeapSize = "4g"
     jvmArgs = ["-Xmx4g", "-XX:MaxMetaspaceSize=512m", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED"]
+}
+
+// Exclude stress tests from default integration test runs.
+// Run them explicitly: ./gradlew quarkusIntTest -Dinclude.stress=true
+tasks.matching { it.name == 'quarkusIntTest' }.configureEach {
+    if (!System.getProperty('include.stress', 'false').toBoolean()) {
+        useJUnitPlatform {
+            excludeTags 'stress'
+        }
+    }
 }
 
 compileJava {

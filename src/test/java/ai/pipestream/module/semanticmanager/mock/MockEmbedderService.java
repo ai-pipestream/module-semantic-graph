@@ -32,10 +32,44 @@ public class MockEmbedderService implements SemanticEmbedderService {
 
     private final Random random = new Random(42); // deterministic seed for reproducibility
 
+    /**
+     * Error simulation triggers for embedding_model_id values.
+     * <ul>
+     *   <li>{@code __error_model} — returns success=false with error message per chunk</li>
+     *   <li>{@code __error_crash} — fails the stream with UNAVAILABLE error</li>
+     * </ul>
+     */
+    private static final String ERROR_PREFIX = "__error_";
+
     @Override
     public Multi<StreamEmbeddingsResponse> streamEmbeddings(Multi<StreamEmbeddingsRequest> requests) {
-        return requests.map(req -> {
-            int dimensions = getDimensions(req.getEmbeddingModelId());
+        return requests.onItem().transformToUniAndConcatenate(req -> {
+            String modelId = req.getEmbeddingModelId();
+
+            // Error simulation
+            if (modelId != null && modelId.startsWith(ERROR_PREFIX)) {
+                String errorType = modelId.substring(ERROR_PREFIX.length());
+                if ("crash".equals(errorType)) {
+                    log.info("MockEmbedder: simulating UNAVAILABLE crash for chunk={}", req.getChunkId());
+                    return io.smallrye.mutiny.Uni.createFrom().failure(
+                            io.grpc.Status.UNAVAILABLE.withDescription("Simulated embedder crash").asRuntimeException());
+                }
+                if ("model".equals(errorType)) {
+                    log.info("MockEmbedder: simulating model error for chunk={}", req.getChunkId());
+                    return io.smallrye.mutiny.Uni.createFrom().item(
+                            StreamEmbeddingsResponse.newBuilder()
+                                    .setRequestId(req.getRequestId())
+                                    .setDocId(req.getDocId())
+                                    .setChunkId(req.getChunkId())
+                                    .setChunkConfigId(req.getChunkConfigId())
+                                    .setEmbeddingModelId(modelId)
+                                    .setSuccess(false)
+                                    .setErrorMessage("Simulated model error: model not available")
+                                    .build());
+                }
+            }
+
+            int dimensions = getDimensions(modelId);
 
             StreamEmbeddingsResponse.Builder builder = StreamEmbeddingsResponse.newBuilder()
                     .setRequestId(req.getRequestId())
@@ -45,7 +79,6 @@ public class MockEmbedderService implements SemanticEmbedderService {
                     .setEmbeddingModelId(req.getEmbeddingModelId())
                     .setSuccess(true);
 
-            // Generate random vector
             for (int i = 0; i < dimensions; i++) {
                 builder.addVector((float) (random.nextGaussian() * 0.1));
             }
@@ -53,7 +86,7 @@ public class MockEmbedderService implements SemanticEmbedderService {
             log.debug("MockEmbedder: embedded chunk={} with model={}, dims={}",
                     req.getChunkId(), req.getEmbeddingModelId(), dimensions);
 
-            return builder.build();
+            return io.smallrye.mutiny.Uni.createFrom().item(builder.build());
         });
     }
 

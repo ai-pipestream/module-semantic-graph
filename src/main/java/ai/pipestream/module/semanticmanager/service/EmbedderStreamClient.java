@@ -6,6 +6,7 @@ import ai.pipestream.semantic.v1.ListEmbeddingModelsResponse;
 import ai.pipestream.semantic.v1.MutinySemanticEmbedderServiceGrpc;
 import ai.pipestream.semantic.v1.StreamEmbeddingsRequest;
 import ai.pipestream.semantic.v1.StreamEmbeddingsResponse;
+import io.quarkus.cache.CacheResult;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -39,13 +40,15 @@ public class EmbedderStreamClient {
 
     /**
      * Lists available embedding models from the embedder service.
-     * Used for fail-fast validation before starting embedding fan-out.
+     * Cached for 30s (matches DjlModelRegistry refresh interval) to avoid
+     * a gRPC round-trip per document during Phase 0 validation.
      *
      * @param readyOnly if true, only returns models with READY status
      * @return response containing available models with their status and dimensions
      */
+    @CacheResult(cacheName = "embedding-models")
     public Uni<ListEmbeddingModelsResponse> listEmbeddingModels(boolean readyOnly) {
-        log.info("Listing embedding models (readyOnly={})", readyOnly);
+        log.info("Listing embedding models (readyOnly={}) — cache miss, calling embedder", readyOnly);
 
         ListEmbeddingModelsRequest request = ListEmbeddingModelsRequest.newBuilder()
                 .setReadyOnly(readyOnly)

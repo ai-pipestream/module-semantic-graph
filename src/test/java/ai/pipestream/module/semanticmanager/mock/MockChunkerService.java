@@ -29,6 +29,15 @@ public class MockChunkerService implements SemanticChunkerService {
     private static final Logger log = LoggerFactory.getLogger(MockChunkerService.class);
     private static final int WORDS_PER_CHUNK = 10;
 
+    /**
+     * Error simulation prefix for chunk_config_id values.
+     * <ul>
+     *   <li>{@code __error_crash} — fails the stream with INTERNAL error</li>
+     *   <li>{@code __error_empty} — returns zero chunks (completes immediately)</li>
+     * </ul>
+     */
+    private static final String ERROR_PREFIX = "__error_";
+
     @Override
     public Multi<StreamChunksResponse> streamChunks(StreamChunksRequest request) {
         String text = request.getTextContent();
@@ -38,6 +47,13 @@ public class MockChunkerService implements SemanticChunkerService {
 
         // Multi-config path: chunk_configs field is populated
         if (request.getChunkConfigsCount() > 0) {
+            // Check for error simulation triggers
+            for (ChunkConfigEntry entry : request.getChunkConfigsList()) {
+                if (entry.getChunkConfigId().startsWith(ERROR_PREFIX)) {
+                    return handleChunkerError(entry.getChunkConfigId(), docId);
+                }
+            }
+
             log.info("MockChunker (multi-config): chunking doc={}, sourceField={}, textLen={}, configs={}",
                     docId, sourceField, text.length(), request.getChunkConfigsCount());
 
@@ -135,6 +151,25 @@ public class MockChunkerService implements SemanticChunkerService {
         }
 
         return chunks;
+    }
+
+    private Multi<StreamChunksResponse> handleChunkerError(String configId, String docId) {
+        String errorType = configId.substring(ERROR_PREFIX.length());
+        return switch (errorType) {
+            case "crash" -> {
+                log.info("MockChunker: simulating INTERNAL crash for doc={}", docId);
+                yield Multi.createFrom().failure(
+                        io.grpc.Status.INTERNAL.withDescription("Simulated chunker crash").asRuntimeException());
+            }
+            case "empty" -> {
+                log.info("MockChunker: simulating empty response for doc={}", docId);
+                yield Multi.createFrom().empty();
+            }
+            default -> {
+                log.warn("MockChunker: unknown error type '{}', returning empty", errorType);
+                yield Multi.createFrom().empty();
+            }
+        };
     }
 
     /**

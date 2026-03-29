@@ -6,7 +6,6 @@ import ai.pipestream.data.module.v1.ProcessDataRequest;
 import ai.pipestream.data.module.v1.ProcessDataResponse;
 import ai.pipestream.data.module.v1.ServiceMetadata;
 import ai.pipestream.data.v1.*;
-import ai.pipestream.data.v1.LogEntry;
 import ai.pipestream.module.semanticmanager.service.VectorSetResolver;
 import ai.pipestream.opensearch.v1.VectorSet;
 import com.google.protobuf.Struct;
@@ -367,6 +366,208 @@ class SemanticManagerServiceTest {
         assertTrue(result.getChunksCount() > 5, "Large doc should produce many chunks");
         assertTrue(elapsedMs < 30000, "Should complete within 30 seconds");
     }
+
+    // =========================================================================
+    // Error / Resilience tests
+    // =========================================================================
+
+    @Test
+    void malformedConfigDoesNotCrash() {
+        PipeDoc testDoc = PipeDoc.newBuilder()
+                .setDocId(UUID.randomUUID().toString())
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Some text to embed with a malformed config.")
+                        .build())
+                .build();
+
+        // Malformed: directives should be a list, not a string
+        Struct malformedConfig = Struct.newBuilder()
+                .putFields("directives", Value.newBuilder().setStringValue("not-a-list").build())
+                .build();
+
+        ProcessDataRequest request = ProcessDataRequest.newBuilder()
+                .setDocument(testDoc)
+                .setMetadata(ServiceMetadata.newBuilder()
+                        .setPipelineName("test-pipeline")
+                        .setPipeStepName("semantic-manager-step")
+                        .setStreamId(UUID.randomUUID().toString())
+                        .setCurrentHopNumber(1)
+                        .build())
+                .setConfig(ProcessConfiguration.newBuilder()
+                        .setJsonConfig(malformedConfig)
+                        .build())
+                .build();
+
+        ProcessDataResponse response = pipeStepProcessorService.processData(request)
+                .await().atMost(Duration.ofSeconds(30));
+
+        SemanticManagerTestBase.assertGracefulErrorResponse(response);
+        log.info("Malformed config test: outcome={}", response.getOutcome());
+    }
+
+    @Test
+    void unknownEmbeddingModelFailsFast() {
+        // Use a model name that doesn't exist in the mock embedder's model list
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("default").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("nonexistent-model-xyz").build())
+                .build();
+
+        PipeDoc testDoc = PipeDoc.newBuilder()
+                .setDocId(UUID.randomUUID().toString())
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Text for unknown model test.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive)
+                                .build())
+                        .build())
+                .build();
+
+        ProcessDataRequest request = buildRequest(testDoc, null);
+        ProcessDataResponse response = pipeStepProcessorService.processData(request)
+                .await().atMost(Duration.ofSeconds(30));
+
+        // Should not crash — either returns unchanged doc or failure outcome
+        SemanticManagerTestBase.assertGracefulErrorResponse(response);
+        log.info("Unknown model test: outcome={}, resultCount={}",
+                response.getOutcome(),
+                response.hasOutputDoc() ? response.getOutputDoc().getSearchMetadata().getSemanticResultsCount() : "no doc");
+    }
+
+    @Test
+    void chunkerErrorPropagates() {
+        // Use __error_crash config to trigger mock chunker failure
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("__error_crash").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("minilm").build())
+                .build();
+
+        PipeDoc testDoc = PipeDoc.newBuilder()
+                .setDocId(UUID.randomUUID().toString())
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Text that will never get chunked because the chunker crashes.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive)
+                                .build())
+                        .build())
+                .build();
+
+        ProcessDataRequest request = buildRequest(testDoc, null);
+        ProcessDataResponse response = pipeStepProcessorService.processData(request)
+                .await().atMost(Duration.ofSeconds(30));
+
+        SemanticManagerTestBase.assertGracefulErrorResponse(response);
+        log.info("Chunker error test: outcome={}", response.getOutcome());
+    }
+
+    @Test
+    void emptyChunkerResponseHandled() {
+        // Use __error_empty config to get zero chunks from chunker
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("__error_empty").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("minilm").build())
+                .build();
+
+        PipeDoc testDoc = PipeDoc.newBuilder()
+                .setDocId(UUID.randomUUID().toString())
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody("Text that will produce zero chunks.")
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive)
+                                .build())
+                        .build())
+                .build();
+
+        ProcessDataRequest request = buildRequest(testDoc, null);
+        ProcessDataResponse response = pipeStepProcessorService.processData(request)
+                .await().atMost(Duration.ofSeconds(30));
+
+        SemanticManagerTestBase.assertGracefulErrorResponse(response);
+        log.info("Empty chunker test: outcome={}", response.getOutcome());
+    }
+
+    // =========================================================================
+    // Field-level embedding tests
+    // =========================================================================
+
+    @Test
+    void fieldLevelSkipChunking() {
+        String text = "This entire field will be embedded as a single chunk without any text splitting.";
+
+        // Directive with no chunker configs = field-level embedding
+        VectorDirective directive = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                // No chunker configs → field-level path
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("minilm").build())
+                .build();
+
+        PipeDoc testDoc = PipeDoc.newBuilder()
+                .setDocId(UUID.randomUUID().toString())
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody(text)
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(directive)
+                                .build())
+                        .build())
+                .build();
+
+        ProcessDataRequest request = buildRequest(testDoc, null);
+        ProcessDataResponse response = pipeStepProcessorService.processData(request)
+                .await().atMost(Duration.ofSeconds(30));
+
+        SemanticManagerTestBase.assertFieldLevelResult(response, "body");
+    }
+
+    @Test
+    void mixedChunkedAndFieldLevel() {
+        String bodyText = "Body text with enough words to produce multiple chunks when split by the chunker. "
+                + "We need several sentences here so the chunker has material to work with.";
+        String titleText = "Short Title for Field-Level Embedding";
+
+        // Body: chunked path. Title: field-level (no chunker configs).
+        VectorDirective bodyDirective = VectorDirective.newBuilder()
+                .setSourceLabel("body")
+                .setCelSelector("document.search_metadata.body")
+                .addChunkerConfigs(NamedChunkerConfig.newBuilder().setConfigId("default").build())
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("minilm").build())
+                .build();
+
+        VectorDirective titleDirective = VectorDirective.newBuilder()
+                .setSourceLabel("title")
+                .setCelSelector("document.search_metadata.title")
+                // No chunker configs → field-level
+                .addEmbedderConfigs(NamedEmbedderConfig.newBuilder().setConfigId("minilm").build())
+                .build();
+
+        PipeDoc testDoc = PipeDoc.newBuilder()
+                .setDocId(UUID.randomUUID().toString())
+                .setSearchMetadata(SearchMetadata.newBuilder()
+                        .setBody(bodyText)
+                        .setTitle(titleText)
+                        .setVectorSetDirectives(VectorSetDirectives.newBuilder()
+                                .addDirectives(bodyDirective)
+                                .addDirectives(titleDirective)
+                                .build())
+                        .build())
+                .build();
+
+        ProcessDataRequest request = buildRequest(testDoc, null);
+        ProcessDataResponse response = pipeStepProcessorService.processData(request)
+                .await().atMost(Duration.ofSeconds(30));
+
+        SemanticManagerTestBase.assertMixedChunkedAndFieldLevel(response);
+    }
+
+    // =========================================================================
+    // Existing helper
+    // =========================================================================
 
     private ProcessDataRequest buildRequest(PipeDoc doc, String indexName) {
         ServiceMetadata metadata = ServiceMetadata.newBuilder()
