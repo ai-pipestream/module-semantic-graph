@@ -125,12 +125,6 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                     log.info(resultMsg);
                     auditLogs.add(moduleLog(resultMsg, LogLevel.LOG_LEVEL_INFO));
 
-                    if (semanticResultCount == 0 && options.hasDirectives()) {
-                        auditLogs.add(moduleLog("Warning: directives were provided but no results produced. " +
-                                "Check that chunker and embedder services are running and registered " +
-                                "with the correct Consul service names.", LogLevel.LOG_LEVEL_WARN));
-                    }
-
                     // Determine expected vs actual result count for partial detection
                     int expectedCount = countExpectedResults(options);
                     var outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_SUCCESS;
@@ -138,14 +132,22 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                             .setOutputDoc(enrichedDoc)
                             .addAllLogEntries(auditLogs);
 
-                    if (semanticResultCount < expectedCount && semanticResultCount > 0) {
+                    if (semanticResultCount == 0 && expectedCount > 0) {
+                        // No text found for any directive selector — the document doesn't have
+                        // the expected fields (e.g., empty body). This is not an error; the
+                        // document passes through without vectors. Downstream modules (opensearch-sink)
+                        // will index metadata without embeddings.
+                        outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_SKIPPED;
+                        String skipMsg = String.format(
+                                "Skipped: no text found for %d directive(s). Document has no content matching CEL selectors — " +
+                                "passing through without semantic processing.", expectedCount);
+                        auditLogs.add(moduleLog(skipMsg, LogLevel.LOG_LEVEL_INFO));
+                    } else if (semanticResultCount < expectedCount && semanticResultCount > 0) {
                         outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_PARTIAL;
                         String partialMsg = String.format("Partial: %d of %d expected embedding strategies produced results",
                                 semanticResultCount, expectedCount);
                         respBuilder.addPartialFailureDetails(partialMsg);
                         auditLogs.add(moduleLog(partialMsg, LogLevel.LOG_LEVEL_WARN));
-                    } else if (semanticResultCount == 0 && expectedCount > 0) {
-                        outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_FAILURE;
                     }
 
                     return respBuilder.setOutcome(outcomeEnum).build();
