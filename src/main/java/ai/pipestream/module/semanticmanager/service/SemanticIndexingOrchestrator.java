@@ -333,11 +333,14 @@ public class SemanticIndexingOrchestrator {
 
         return embedderStreamClient.listEmbeddingModels(true)
                 .map(response -> {
-                    // Build lookup set from ALL model identifiers — enum name, serving name, and HuggingFace ID.
-                    // Directives may use any of these naming conventions.
+                    // Build lookup set from all model aliases. The embedder returns all
+                    // resolvable name variants (config key, serving name, HuggingFace ID,
+                    // short HuggingFace name) in the aliases field.
                     Set<String> readyIdentifiers = new java.util.HashSet<>();
                     for (EmbeddingModelInfo info : response.getModelsList()) {
-                        readyIdentifiers.add(info.getEnumName());
+                        readyIdentifiers.addAll(info.getAliasesList());
+                        // Backward compat: also add legacy fields in case embedder hasn't been updated
+                        readyIdentifiers.add(info.getIdentifier());
                         readyIdentifiers.add(info.getModelName());
                         readyIdentifiers.add(info.getHuggingFaceId());
                     }
