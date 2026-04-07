@@ -86,7 +86,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         // 2 chunkers x 2 embedders = 4 results
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
@@ -152,7 +152,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
                 .as("Should have 1 SemanticProcessingResult")
@@ -206,7 +206,7 @@ class SemanticIndexingOrchestratorTest {
                         .build()));
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         // Doc returned unchanged -- no semantic results
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
@@ -252,7 +252,7 @@ class SemanticIndexingOrchestratorTest {
         // The orchestrate call should propagate the failure
         try {
             orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                    .await().indefinitely();
+                    .await().indefinitely().enrichedDoc();
             // If no exception, that's also acceptable -- failure may be swallowed at the Uni level
         } catch (Exception e) {
             assertThat(e.getMessage())
@@ -278,7 +278,7 @@ class SemanticIndexingOrchestratorTest {
         SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8, null);
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getDocId())
                 .as("Doc ID should be preserved")
@@ -314,7 +314,7 @@ class SemanticIndexingOrchestratorTest {
         SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8, null);
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
                 .as("One VectorSet should produce one SemanticProcessingResult")
@@ -354,7 +354,7 @@ class SemanticIndexingOrchestratorTest {
         SemanticManagerOptions options = new SemanticManagerOptions("test-index", null, 4, 8, null);
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
                 .as("Two VectorSets with same chunker should produce 2 results")
@@ -392,7 +392,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
                 .as("Should have 1 result")
@@ -424,7 +424,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         orchestrator.orchestrate(inputDoc, new SemanticManagerOptions("some-index", null, 4, 8, null), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(vectorSetResolver, never()).resolveVectorSets(anyString());
     }
@@ -459,7 +459,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
                 .as("Two directives with same chunker should produce 2 results (one per embedder)")
@@ -495,7 +495,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(chunkerStreamClient, never()).streamChunks(any());
         verify(embedderStreamClient, times(1)).streamEmbeddings(any());
@@ -542,7 +542,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(chunkerStreamClient, never()).streamChunks(any());
         verify(embedderStreamClient, times(2)).streamEmbeddings(any());
@@ -580,7 +580,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(chunkerStreamClient, times(1)).streamChunks(any());
         verify(embedderStreamClient, times(2)).streamEmbeddings(any());
@@ -610,7 +610,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(chunkerStreamClient, never()).streamChunks(any());
         verify(embedderStreamClient, times(1)).streamEmbeddings(any());
@@ -647,7 +647,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(chunkerStreamClient, times(1)).streamChunks(any());
         verify(embedderStreamClient, times(1)).streamEmbeddings(any());
@@ -680,7 +680,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, options, "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         verify(chunkerStreamClient, times(1)).streamChunks(any());
         assertThat(result.getSearchMetadata().getSemanticResultsCount())
@@ -717,7 +717,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         assertThat(result.getSearchMetadata().getSourceFieldAnalyticsCount())
                 .as("Should have source field analytics entries")
@@ -766,7 +766,7 @@ class SemanticIndexingOrchestratorTest {
         setupEmbedderMock();
 
         PipeDoc result = orchestrator.orchestrate(inputDoc, new SemanticManagerOptions(), "node-1")
-                .await().indefinitely();
+                .await().indefinitely().enrichedDoc();
 
         // Should still proceed and produce results
         assertThat(result.getSearchMetadata().getSemanticResultsCount())

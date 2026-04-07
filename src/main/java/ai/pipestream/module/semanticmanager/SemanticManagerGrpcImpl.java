@@ -113,17 +113,28 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
         // Run orchestration
         long startTime = System.currentTimeMillis();
         return orchestrator.orchestrate(inputDoc, options, nodeId)
-                .map(enrichedDoc -> {
+                .map(result -> {
+                    PipeDoc enrichedDoc = result.enrichedDoc();
+                    int failedEmbeddings = result.failedEmbeddingCount();
                     long duration = System.currentTimeMillis() - startTime;
                     int semanticResultCount = enrichedDoc.hasSearchMetadata()
                             ? enrichedDoc.getSearchMetadata().getSemanticResultsCount()
                             : 0;
 
                     String resultMsg = String.format(
-                            "Semantic manager produced %d SemanticProcessingResults for doc: %s in %dms",
-                            semanticResultCount, inputDoc.getDocId(), duration);
+                            "Semantic manager produced %d SemanticProcessingResults for doc: %s in %dms (failedEmbeddings=%d)",
+                            semanticResultCount, inputDoc.getDocId(), duration, failedEmbeddings);
                     log.info(resultMsg);
                     auditLogs.add(moduleLog(resultMsg, LogLevel.LOG_LEVEL_INFO));
+
+                    // Log embedding failures to audit trail
+                    if (failedEmbeddings > 0) {
+                        String failMsg = String.format(
+                                "WARNING: %d chunk embeddings failed during semantic processing for doc: %s. " +
+                                "These chunks were indexed without vectors.", failedEmbeddings, inputDoc.getDocId());
+                        log.warn(failMsg);
+                        auditLogs.add(moduleLog(failMsg, LogLevel.LOG_LEVEL_WARN));
+                    }
 
                     // Determine expected vs actual result count for partial detection
                     int expectedCount = countExpectedResults(options);
@@ -133,15 +144,18 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                             .addAllLogEntries(auditLogs);
 
                     if (semanticResultCount == 0 && expectedCount > 0) {
-                        // No text found for any directive selector — the document doesn't have
-                        // the expected fields (e.g., empty body). This is not an error; the
-                        // document passes through without vectors. Downstream modules (opensearch-sink)
-                        // will index metadata without embeddings.
                         outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_SKIPPED;
                         String skipMsg = String.format(
                                 "Skipped: no text found for %d directive(s). Document has no content matching CEL selectors — " +
                                 "passing through without semantic processing.", expectedCount);
                         auditLogs.add(moduleLog(skipMsg, LogLevel.LOG_LEVEL_INFO));
+                    } else if (failedEmbeddings > 0) {
+                        // Embedding failures → PARTIAL regardless of result count
+                        outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_PARTIAL;
+                        String partialMsg = String.format("Partial: %d chunk embeddings failed out of %d semantic results",
+                                failedEmbeddings, semanticResultCount);
+                        respBuilder.addPartialFailureDetails(partialMsg);
+                        auditLogs.add(moduleLog(partialMsg, LogLevel.LOG_LEVEL_WARN));
                     } else if (semanticResultCount < expectedCount && semanticResultCount > 0) {
                         outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_PARTIAL;
                         String partialMsg = String.format("Partial: %d of %d expected embedding strategies produced results",

@@ -55,7 +55,9 @@ public class SemanticIndexingOrchestrator {
      * Orchestrates semantic indexing for a document. Checks for directives on the doc first,
      * falls back to VectorSetService resolution.
      */
-    public Uni<PipeDoc> orchestrate(PipeDoc inputDoc, SemanticManagerOptions options, String nodeId) {
+    public record OrchestrationResult(PipeDoc enrichedDoc, int failedEmbeddingCount) {}
+
+    public Uni<OrchestrationResult> orchestrate(PipeDoc inputDoc, SemanticManagerOptions options, String nodeId) {
         String docId = inputDoc.getDocId();
 
         // Priority 1: use directives from the doc if present
@@ -102,7 +104,7 @@ public class SemanticIndexingOrchestrator {
     // Directive-based orchestration (primary path) — 4-phase scatter-gather
     // =========================================================================
 
-    private Uni<PipeDoc> orchestrateFromDirectives(PipeDoc inputDoc, String nodeId, String semanticConfigId) {
+    private Uni<OrchestrationResult> orchestrateFromDirectives(PipeDoc inputDoc, String nodeId, String semanticConfigId) {
         String docId = inputDoc.getDocId();
         VectorSetDirectives directives = inputDoc.getSearchMetadata().getVectorSetDirectives();
 
@@ -157,7 +159,7 @@ public class SemanticIndexingOrchestrator {
 
         if (sourceTextWorkMap.isEmpty() && fieldLevelTargets.isEmpty()) {
             log.warn("No valid directives produced work items for doc: {}", docId);
-            return Uni.createFrom().item(inputDoc);
+            return Uni.createFrom().item(new OrchestrationResult(inputDoc, 0));
         }
 
         log.info("Directive orchestration: {} source texts with chunking, {} field-level targets for doc: {}",
@@ -180,7 +182,7 @@ public class SemanticIndexingOrchestrator {
                 .chain(validationOk -> {
                     if (!validationOk) {
                         log.error("Model validation failed for doc: {}. Returning doc unchanged.", docId);
-                        return Uni.createFrom().item(inputDoc);
+                        return Uni.createFrom().item(new OrchestrationResult(inputDoc, 0));
                     }
 
                     // ─── Separate semantic vs standard chunk configs ───
@@ -567,7 +569,7 @@ public class SemanticIndexingOrchestrator {
     /**
      * Assembles the final PipeDoc from all embed results and field-level results.
      */
-    private PipeDoc assembleDocument(
+    private OrchestrationResult assembleDocument(
             PipeDoc inputDoc,
             List<AssemblyOutput> embedResults,
             List<AssemblyOutput> fieldResults,
@@ -626,9 +628,11 @@ public class SemanticIndexingOrchestrator {
         }
 
         outputDocBuilder.setSearchMetadata(smBuilder.build());
-        log.info("Phase 3: Semantic orchestration complete for doc: {}. Total semantic results: {}, source field analytics: {}",
-                docId, smBuilder.getSemanticResultsCount(), sfaMap.size());
-        return outputDocBuilder.build();
+
+        int totalFailedEmbeddings = allOutputs.stream().mapToInt(AssemblyOutput::failedEmbeddingCount).sum();
+        log.info("Phase 3: Semantic orchestration complete for doc: {}. Total semantic results: {}, source field analytics: {}, failedEmbeddings: {}",
+                docId, smBuilder.getSemanticResultsCount(), sfaMap.size(), totalFailedEmbeddings);
+        return new OrchestrationResult(outputDocBuilder.build(), totalFailedEmbeddings);
     }
 
     /**
@@ -704,7 +708,7 @@ public class SemanticIndexingOrchestrator {
     // Config-based orchestration (directives from module config)
     // =========================================================================
 
-    private Uni<PipeDoc> orchestrateFromConfigDirectives(PipeDoc inputDoc,
+    private Uni<OrchestrationResult> orchestrateFromConfigDirectives(PipeDoc inputDoc,
                                                           SemanticManagerOptions options,
                                                           String nodeId) {
         String semanticConfigId = options.hasSemanticConfigId() ? options.semanticConfigId() : null;
@@ -773,7 +777,7 @@ public class SemanticIndexingOrchestrator {
     // VectorSetService-based orchestration (fallback path)
     // =========================================================================
 
-    private Uni<PipeDoc> orchestrateFromVectorSetService(PipeDoc inputDoc,
+    private Uni<OrchestrationResult> orchestrateFromVectorSetService(PipeDoc inputDoc,
                                                           SemanticManagerOptions options,
                                                           String nodeId) {
         String docId = inputDoc.getDocId();
@@ -785,7 +789,7 @@ public class SemanticIndexingOrchestrator {
                     if (activeVectorSets.isEmpty()) {
                         log.warn("No VectorSets found for index: {}. Returning doc unchanged.",
                                 options.effectiveIndexName());
-                        return Uni.createFrom().item(inputDoc);
+                        return Uni.createFrom().item(new OrchestrationResult(inputDoc, 0));
                     }
 
                     log.info("Processing {} VectorSets for doc: {}", activeVectorSets.size(), docId);
@@ -836,7 +840,8 @@ public class SemanticIndexingOrchestrator {
 
                     String semanticConfigId = options.hasSemanticConfigId() ? options.semanticConfigId() : null;
                     return orchestrateFromDirectives(docWithDirectives, nodeId, semanticConfigId)
-                            .map(enrichedDoc -> {
+                            .map(orchestrationResult -> {
+                                PipeDoc enrichedDoc = orchestrationResult.enrichedDoc();
                                 // Post-process: add VectorSet metadata to results
                                 PipeDoc.Builder docBuilder = enrichedDoc.toBuilder();
                                 SearchMetadata.Builder smb = enrichedDoc.getSearchMetadata().toBuilder();
@@ -867,7 +872,7 @@ public class SemanticIndexingOrchestrator {
                                 }
 
                                 docBuilder.setSearchMetadata(smb.build());
-                                return docBuilder.build();
+                                return new OrchestrationResult(docBuilder.build(), orchestrationResult.failedEmbeddingCount());
                             });
                 });
     }
@@ -908,7 +913,8 @@ public class SemanticIndexingOrchestrator {
     record AssemblyOutput(
             SemanticProcessingResult result,
             DocumentAnalytics documentAnalytics,
-            int totalChunks
+            int totalChunks,
+            int failedEmbeddingCount
     ) {}
 
     private AssemblyOutput assembleResult(
@@ -924,11 +930,14 @@ public class SemanticIndexingOrchestrator {
             String semanticGranularity) {
 
         Map<String, StreamEmbeddingsResponse> embeddingMap = new HashMap<>();
+        int failedEmbeddingCount = 0;
         for (StreamEmbeddingsResponse resp : embeddingResponses) {
             if (resp.getSuccess()) {
                 embeddingMap.put(resp.getChunkId(), resp);
             } else {
-                log.warn("Embedding failed for chunk {}: {}", resp.getChunkId(), resp.getErrorMessage());
+                failedEmbeddingCount++;
+                log.warn("Embedding failed for chunk {} with model {}: {}",
+                        resp.getChunkId(), resp.getEmbeddingModelId(), resp.getErrorMessage());
             }
         }
 
@@ -993,10 +1002,10 @@ public class SemanticIndexingOrchestrator {
             }
         }
 
-        log.info("Assembled SemanticProcessingResult: resultSet={}, chunks={}, embeddings={}",
-                resultSetName, chunks.size(), embeddingMap.size());
+        log.info("Assembled SemanticProcessingResult: resultSet={}, chunks={}, embeddings={}, failedEmbeddings={}",
+                resultSetName, chunks.size(), embeddingMap.size(), failedEmbeddingCount);
 
-        return new AssemblyOutput(resultBuilder.build(), documentAnalytics, totalChunksReported);
+        return new AssemblyOutput(resultBuilder.build(), documentAnalytics, totalChunksReported, failedEmbeddingCount);
     }
 
     private String extractSourceText(PipeDoc doc, String sourceField) {
@@ -1437,7 +1446,7 @@ public class SemanticIndexingOrchestrator {
             resultBuilder.addChunks(chunk.build());
         }
 
-        return new AssemblyOutput(resultBuilder.build(), null, centroids.size());
+        return new AssemblyOutput(resultBuilder.build(), null, centroids.size(), 0);
     }
 
     private static com.google.protobuf.Value protoValue(String s) {
