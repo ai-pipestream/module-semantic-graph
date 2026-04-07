@@ -140,8 +140,7 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                     int expectedCount = countExpectedResults(options);
                     var outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_SUCCESS;
                     ProcessDataResponse.Builder respBuilder = ProcessDataResponse.newBuilder()
-                            .setOutputDoc(enrichedDoc)
-                            .addAllLogEntries(auditLogs);
+                            .setOutputDoc(enrichedDoc);
 
                     if (semanticResultCount == 0 && expectedCount > 0) {
                         outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_SKIPPED;
@@ -164,7 +163,10 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                         auditLogs.add(moduleLog(partialMsg, LogLevel.LOG_LEVEL_WARN));
                     }
 
-                    return respBuilder.setOutcome(outcomeEnum).build();
+                    return respBuilder
+                            .addAllLogEntries(auditLogs)
+                            .setOutcome(outcomeEnum)
+                            .build();
                 });
     }
 
