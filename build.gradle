@@ -29,7 +29,7 @@ scmVersion {
 pipestreamProtos {
     sourceMode = 'git-proto-workspace'
     gitRepo = "https://github.com/ai-pipestream/pipestream-protos.git"
-    gitRef = "feature/db-driven-embedding-config"
+    gitRef = "main"
     generateMutiny = true
     generateDescriptors = true
 
