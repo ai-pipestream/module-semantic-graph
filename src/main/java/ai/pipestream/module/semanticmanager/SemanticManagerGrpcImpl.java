@@ -152,7 +152,7 @@ public class SemanticManagerGrpcImpl implements PipeStepProcessorService {
                     } else if (failedEmbeddings > 0) {
                         // Embedding failures → PARTIAL regardless of result count
                         outcomeEnum = ai.pipestream.data.module.v1.ProcessingOutcome.PROCESSING_OUTCOME_PARTIAL;
-                        String partialMsg = String.format("Partial: %d chunk embeddings failed out of %d semantic results",
+                        String partialMsg = String.format("Partial: %d chunk embedding(s) failed across %d semantic processing result(s)",
                                 failedEmbeddings, semanticResultCount);
                         respBuilder.addPartialFailureDetails(partialMsg);
                         auditLogs.add(moduleLog(partialMsg, LogLevel.LOG_LEVEL_WARN));
