@@ -952,7 +952,7 @@ public class SemanticIndexingOrchestrator {
             resultBuilder.setSemanticConfigId(semanticConfigId);
         }
         if (semanticGranularity != null) {
-            resultBuilder.setSemanticGranularity(semanticGranularity);
+            resultBuilder.setGranularity(toGranularityLevel(semanticGranularity));
         }
 
         if (nodeId != null) {
@@ -1410,14 +1410,14 @@ public class SemanticIndexingOrchestrator {
                 .setEmbeddingConfigId(embeddingConfigId)
                 .setResultSetName(sourceLabel + "-" + granularity + "-" + embeddingConfigId)
                 .setCentroidMetadata(CentroidMetadata.newBuilder()
-                        .setGranularity(granularity)
+                        .setGranularity(toGranularityLevel(granularity))
                         .setSourceVectorCount(centroids.stream()
                                 .mapToInt(CentroidComputer.CentroidResult::sourceVectorCount).sum())
                         .build());
 
         if (semanticConfigId != null) {
             resultBuilder.setSemanticConfigId(semanticConfigId);
-            resultBuilder.setSemanticGranularity(granularity.toUpperCase());
+            resultBuilder.setGranularity(toGranularityLevel(granularity));
         }
 
         if (nodeId != null) {
@@ -1451,6 +1451,27 @@ public class SemanticIndexingOrchestrator {
 
     private static com.google.protobuf.Value protoValue(String s) {
         return com.google.protobuf.Value.newBuilder().setStringValue(s).build();
+    }
+
+    /**
+     * Convert a short granularity name (e.g. "SENTENCE", "PARAGRAPH", "DOCUMENT")
+     * into the GranularityLevel enum. Returns GRANULARITY_LEVEL_UNSPECIFIED for
+     * unknown values. The short-name vocabulary is what the semantic-manager
+     * uses internally; the enum is the shared proto type consumed by downstream
+     * services (opensearch-manager, quality module, etc.).
+     */
+    private static GranularityLevel toGranularityLevel(String shortName) {
+        if (shortName == null) {
+            return GranularityLevel.GRANULARITY_LEVEL_UNSPECIFIED;
+        }
+        return switch (shortName.toUpperCase(java.util.Locale.ROOT)) {
+            case "SEMANTIC_CHUNK" -> GranularityLevel.GRANULARITY_LEVEL_SEMANTIC_CHUNK;
+            case "SENTENCE" -> GranularityLevel.GRANULARITY_LEVEL_SENTENCE;
+            case "PARAGRAPH" -> GranularityLevel.GRANULARITY_LEVEL_PARAGRAPH;
+            case "SECTION" -> GranularityLevel.GRANULARITY_LEVEL_SECTION;
+            case "DOCUMENT" -> GranularityLevel.GRANULARITY_LEVEL_DOCUMENT;
+            default -> GranularityLevel.GRANULARITY_LEVEL_UNSPECIFIED;
+        };
     }
 
     // =========================================================================
