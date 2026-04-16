@@ -113,16 +113,16 @@ real MiniLM model. It skips with a clear reason when DJL isn't reachable.
 **Bring up DJL (CPU variant, simplest):**
 
 ```bash
-docker run -d --name r3-djl --rm -p 18080:8080 deepjavalibrary/djl-serving:0.36.0-cpu
+docker run -d --name r3-djl --rm -p 18090:8080 deepjavalibrary/djl-serving:0.36.0-cpu
 # wait ~5 seconds for startup
-curl -X POST 'http://localhost:18080/models?url=djl%3A%2F%2Fai.djl.huggingface.pytorch%2Fsentence-transformers%2Fall-MiniLM-L6-v2&model_name=all-MiniLM-L6-v2&engine=PyTorch&batch_size=1&max_batch_delay=0&min_worker=1&max_worker=2&job_queue_size=1000&translatorFactory=ai.djl.huggingface.translator.TextEmbeddingTranslatorFactory&synchronous=true'
+curl -X POST 'http://localhost:18090/models?url=djl%3A%2F%2Fai.djl.huggingface.pytorch%2Fsentence-transformers%2Fall-MiniLM-L6-v2&model_name=all-MiniLM-L6-v2&engine=PyTorch&batch_size=1&max_batch_delay=0&min_worker=1&max_worker=2&job_queue_size=1000&translatorFactory=ai.djl.huggingface.translator.TextEmbeddingTranslatorFactory&synchronous=true'
 ```
 
 **Or GPU variant (matches module-embedder's tuned config — see
 `/work/modules/module-embedder/docs/ai-slop/djl-serving-config.md`):**
 
 ```bash
-docker run -d --name r3-djl --rm --gpus all -p 18080:8080 \
+docker run -d --name r3-djl --rm --gpus all -p 18090:8080 \
     -e JAVA_OPTS="-Xmx16g -Xms8g" \
     deepjavalibrary/djl-serving:0.36.0-pytorch-gpu
 # same POST as above; add more models by repeating with different model_name / url
@@ -132,7 +132,7 @@ docker run -d --name r3-djl --rm --gpus all -p 18080:8080 \
 
 ```bash
 ./gradlew test --tests 'SemanticGraphPipelineServiceIT' \
-    -Ddjl.host=localhost -Ddjl.port=18080
+    -Ddjl.host=localhost -Ddjl.port=18090
 ```
 
 The `test` task forwards `-Ddjl.*` sysprops to the forked JVM (see

@@ -99,7 +99,7 @@ class SemanticGraphPipelineServiceIT {
         @Override
         public Map<String, String> getConfigOverrides() {
             String host = System.getProperty("djl.host", "localhost");
-            String port = System.getProperty("djl.port", "8080");
+            String port = System.getProperty("djl.port", "18090");
             return Map.of(
                     "quarkus.rest-client.djl-serving.url", "http://" + host + ":" + port);
         }
@@ -114,9 +114,14 @@ class SemanticGraphPipelineServiceIT {
     private static final int EXPECTED_DIMS = 384;
     private static final Duration TIMEOUT = Duration.ofMinutes(2);
 
-    private static final boolean USE_EXTERNAL = System.getProperty("djl.host") != null;
+    /**
+     * Default DJL endpoint. Port 18090 is the convention for module-semantic-graph's
+     * test/dev DJL Serving instance — picked to avoid the 18080 collision with
+     * SeaweedFS in the platform's docker-compose stack. Override via
+     * {@code -Ddjl.host=... -Ddjl.port=...} on the Gradle command line.
+     */
     private static final String EXTERNAL_HOST = System.getProperty("djl.host", "localhost");
-    private static final int EXTERNAL_PORT = Integer.parseInt(System.getProperty("djl.port", "8080"));
+    private static final int EXTERNAL_PORT = Integer.parseInt(System.getProperty("djl.port", "18090"));
 
     @Inject
     @RestClient
