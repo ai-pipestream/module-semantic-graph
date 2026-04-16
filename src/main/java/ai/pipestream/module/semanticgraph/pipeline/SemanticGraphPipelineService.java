@@ -15,6 +15,7 @@ import ai.pipestream.data.v1.VectorDirective;
 import ai.pipestream.module.semanticgraph.config.SemanticGraphStepOptions;
 import ai.pipestream.module.semanticgraph.djl.SemanticGraphEmbedHelper;
 import ai.pipestream.module.semanticgraph.invariants.SemanticPipelineInvariants;
+import ai.pipestream.module.semanticgraph.metrics.SemanticGraphMetrics;
 import ai.pipestream.module.semanticgraph.service.CentroidComputer;
 import ai.pipestream.module.semanticgraph.service.SemanticBoundaryDetector;
 import com.google.protobuf.Struct;
@@ -28,6 +29,7 @@ import org.jboss.logging.Logger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -93,10 +95,14 @@ public class SemanticGraphPipelineService {
     private static final String ALGORITHM_SENTENCE = "SENTENCE";
 
     private final SemanticGraphEmbedHelper embedHelper;
+    private final SemanticGraphMetrics metrics;
 
     @Inject
-    public SemanticGraphPipelineService(SemanticGraphEmbedHelper embedHelper) {
+    public SemanticGraphPipelineService(
+            SemanticGraphEmbedHelper embedHelper,
+            SemanticGraphMetrics metrics) {
         this.embedHelper = embedHelper;
+        this.metrics = metrics;
     }
 
     /**
@@ -113,23 +119,43 @@ public class SemanticGraphPipelineService {
      *         violation
      */
     public Uni<PipeDoc> process(PipeDoc inputDoc, SemanticGraphStepOptions options, String pipeStepName) {
+        final long processStartNs = System.nanoTime();
+
         // Phase 1 — synchronous validation + prep
         Prepared prepared = prepare(inputDoc, options, pipeStepName);
+        metrics.recordStage2SprCount(prepared.byTriple.size());
 
         // Phase 2 — centroid pass (pure CPU; inline in Uni.createFrom().item
         // so every subscription evaluates lazily)
-        Uni<List<SemanticProcessingResult>> centroidsUni = Uni.createFrom().item(() ->
-                computeCentroids(prepared));
+        Uni<List<SemanticProcessingResult>> centroidsUni = Uni.createFrom().item(() -> {
+            long t0 = System.nanoTime();
+            List<SemanticProcessingResult> out = computeCentroids(prepared);
+            metrics.centroidCompleted(Duration.ofNanos(System.nanoTime() - t0));
+            metrics.recordCentroidSprCount(out.size());
+            return out;
+        });
 
         // Phase 3 — boundary pass (may involve DJL I/O)
+        final long boundaryStartNs = System.nanoTime();
         Uni<List<SemanticProcessingResult>> boundariesUni = prepared.options.effectiveComputeSemanticBoundaries()
                 ? computeBoundaries(prepared)
-                : Uni.createFrom().item(List.of());
+                        .onTermination().invoke((ignored, err, cancelled) ->
+                                metrics.boundaryCompleted(Duration.ofNanos(System.nanoTime() - boundaryStartNs)))
+                : Uni.createFrom().item(List.<SemanticProcessingResult>of())
+                        .onItem().invoke(ignored ->
+                                metrics.boundaryCompleted(Duration.ofNanos(System.nanoTime() - boundaryStartNs)));
 
         // Phase 4 — assemble + self-check + emit
         return Uni.combine().all().unis(centroidsUni, boundariesUni)
                 .asTuple()
-                .map(tuple -> assembleOutputDoc(prepared, tuple.getItem1(), tuple.getItem2()));
+                .map(tuple -> assembleOutputDoc(prepared, tuple.getItem1(), tuple.getItem2()))
+                .onTermination().invoke((ignored, err, cancelled) -> {
+                    // Per-doc wall clock — success AND failure both record so
+                    // the p95 includes tail latencies even when they error.
+                    // (docCompleted/docFailed live in the gRPC layer to
+                    // bracket the full request including parseOptions.)
+                    // Intentionally not recording here; gRPC layer does it.
+                });
     }
 
     // =========================================================================
@@ -206,8 +232,15 @@ public class SemanticGraphPipelineService {
             byTriple.computeIfAbsent(key, k -> new ArrayList<>()).add(spr);
         }
 
-        log.debugf("R3 prepared doc=%s step=%s: %d directive(s), %d Stage-2 SPR group(s)",
-                inputDoc.getDocId(), pipeStepName, directives.size(), byTriple.size());
+        // Audit: surfaces the input shape in a grep-friendly line. Every
+        // R3 invocation logs exactly one of these at INFO so operators can
+        // replay traffic shape from module logs alone, without
+        // back-reading metrics.
+        log.infof("R3 AUDIT prepare doc=%s step=%s directives=%d stage2_triples=%d "
+                        + "sentence_configs_by_source=%s hasDocOutline=%s",
+                inputDoc.getDocId(), pipeStepName, directives.size(), byTriple.size(),
+                sentenceConfigsBySource,
+                inputDoc.getSearchMetadata().hasDocOutline());
 
         return new Prepared(inputDoc, options, pipeStepName, directives,
                 directiveBySourceLabel, sentenceConfigsBySource, byTriple, docHash);
@@ -525,6 +558,11 @@ public class SemanticGraphPipelineService {
         groups = SemanticBoundaryDetector.enforceMaxChunkSize(
                 groups, similarities, boundaries, opt.effectiveBoundaryMaxSentencesPerChunk());
 
+        // Record group count before the hard-cap check so even rejected docs
+        // show up in the distribution — operators can tell when thresholds
+        // drift toward pathological configs.
+        metrics.recordBoundaryGroupCount(groups.size());
+
         // §21.x hard cap — fail with a clear message, never silently truncate.
         int hardCap = opt.effectiveMaxSemanticChunksPerDoc();
         if (groups.size() > hardCap) {
@@ -693,9 +731,30 @@ public class SemanticGraphPipelineService {
             throw new IllegalStateException("R3 produced invalid Stage-3 output: " + err);
         }
 
-        log.infof("R3 done doc=%s: stage-2=%d, centroids=%d, boundaries=%d, total=%d",
+        // Audit: per-doc output shape. Log per-granularity centroid counts +
+        // per-source boundary group counts so log-only replay can reconstruct
+        // Stage-3 shape without the PipeDoc. One grep for 'R3 AUDIT emit
+        // doc=<X>' gets the full R3 timeline for a doc: prepare, centroid,
+        // boundary, emit.
+        int docCentroids = 0, paragraphCentroids = 0, sectionCentroids = 0;
+        for (SemanticProcessingResult spr : centroidSprs) {
+            switch (spr.getChunkConfigId()) {
+                case "document_centroid"  -> docCentroids++;
+                case "paragraph_centroid" -> paragraphCentroids++;
+                case "section_centroid"   -> sectionCentroids++;
+                default -> { /* forward-compat */ }
+            }
+        }
+        int totalBoundaryChunks = 0;
+        for (SemanticProcessingResult spr : boundarySprs) {
+            totalBoundaryChunks += spr.getChunksCount();
+        }
+        log.infof("R3 AUDIT emit doc=%s stage2_preserved=%d doc_centroids=%d "
+                        + "paragraph_centroids=%d section_centroids=%d boundary_sprs=%d "
+                        + "boundary_chunks_total=%d final_spr_count=%d",
                 prepared.inputDoc.getDocId(), inputSm.getSemanticResultsCount(),
-                centroidSprs.size(), boundarySprs.size(), merged.size());
+                docCentroids, paragraphCentroids, sectionCentroids,
+                boundarySprs.size(), totalBoundaryChunks, merged.size());
         return outputDoc;
     }
 

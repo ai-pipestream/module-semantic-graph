@@ -17,6 +17,7 @@ import ai.pipestream.data.v1.VectorSetDirectives;
 import ai.pipestream.module.semanticgraph.config.SemanticGraphStepOptions;
 import ai.pipestream.module.semanticgraph.djl.SemanticGraphEmbedHelper;
 import ai.pipestream.module.semanticgraph.invariants.SemanticPipelineInvariants;
+import ai.pipestream.module.semanticgraph.metrics.SemanticGraphMetrics;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import io.smallrye.mutiny.Uni;
@@ -68,7 +69,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_allFlagsOff_passThroughWithLexSort() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         PipeDoc input = buildValidStage2();
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
@@ -92,7 +93,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_documentCentroidOnly_emitsOneCentroidPerTriple() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         PipeDoc input = buildValidStage2();  // 1 Stage-2 SPR
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
@@ -130,7 +131,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_sectionCentroidsWithDocOutline() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         PipeDoc input = buildStage2WithDocOutline();
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
@@ -159,7 +160,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_paragraphCentroids_skippedWhenSourceTextUnresolvable() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         // source_label = "body" but SearchMetadata.body is unset → unresolvable
         PipeDoc input = buildValidStage2();  // default stage2 has no body text set
@@ -181,7 +182,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_paragraphCentroids_usingBodyFieldWithParagraphBreaks() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         // Build stage2 where the SPR contains 2 chunks separated by "\n\n" in body.
         String body = "Sentence one.\n\nSentence two.";
@@ -243,7 +244,7 @@ class SemanticGraphPipelineServiceTest {
                     return Uni.createFrom().item(vecs);
                 });
 
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         // stage2 with sentences_internal + minilm, 3 sentence chunks
         PipeDoc input = buildStage2WithSentencesInternal();
 
@@ -275,7 +276,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_nullDoc_throwsIAE() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, false, null,
                 null, null, null, null, null, null, null, null, null);
@@ -287,7 +288,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_nullOptions_throwsIAE() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         PipeDoc input = buildValidStage2();
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .isThrownBy(() -> svc.process(input, null, "step"));
@@ -296,7 +297,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_placeholderSprAtStage2_throwsISE() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         SemanticProcessingResult placeholder = validStage2Spr().toBuilder()
                 .setEmbeddingConfigId("").build();
@@ -323,7 +324,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_duplicateSourceLabel_throwsIAE() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         VectorSetDirectives dup = VectorSetDirectives.newBuilder()
                 .addDirectives(VectorDirective.newBuilder()
@@ -358,7 +359,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_boundariesOnWithNoModelId_throwsIAEAtValidateForUse() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         PipeDoc input = buildStage2WithSentencesInternal();
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
@@ -379,7 +380,7 @@ class SemanticGraphPipelineServiceTest {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
         when(djl.isModelLoaded(eq("minilm"))).thenReturn(Uni.createFrom().item(Boolean.FALSE));
 
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         PipeDoc input = buildStage2WithSentencesInternal();
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, true, "minilm",
@@ -400,7 +401,7 @@ class SemanticGraphPipelineServiceTest {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
         when(djl.isModelLoaded(eq("unused"))).thenReturn(Uni.createFrom().item(Boolean.TRUE));
 
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         PipeDoc input = buildStage2WithSentencesInternal();   // sentence SPR for 'minilm', not 'unused'
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, true, "unused",
@@ -419,7 +420,7 @@ class SemanticGraphPipelineServiceTest {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
         when(djl.isModelLoaded(eq("minilm"))).thenReturn(Uni.createFrom().item(Boolean.TRUE));
 
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         // Build 60 sentence chunks with alternating similarity — boundary detector
         // with percentile=100 will mark nearly every gap as a boundary.
         PipeDoc input = buildStage2WithManySentences(60);
@@ -445,7 +446,7 @@ class SemanticGraphPipelineServiceTest {
         when(djl.embed(eq("minilm"), any(), anyInt(), anyInt(), anyInt(), anyLong()))
                 .thenReturn(Uni.createFrom().failure(new ConnectException("djl down")));
 
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
         PipeDoc input = buildStage2WithSentencesInternal();
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, true, "minilm",
@@ -468,7 +469,7 @@ class SemanticGraphPipelineServiceTest {
     @Test
     void process_centroidsAppendedInLexOrder() {
         SemanticGraphEmbedHelper djl = mock(SemanticGraphEmbedHelper.class);
-        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl);
+        SemanticGraphPipelineService svc = new SemanticGraphPipelineService(djl, noopMetrics());
 
         PipeDoc input = buildValidStage2();
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
@@ -491,6 +492,12 @@ class SemanticGraphPipelineServiceTest {
             assertThat(cmp).as("SPR[%d] must be <= SPR[%d] in lex order", i - 1, i)
                     .isLessThanOrEqualTo(0);
         }
+    }
+
+    /** No-op metrics bean for unit tests. Mockito gives us zero-cost stubs
+     *  for every SemanticGraphMetrics method without a real MeterRegistry. */
+    private static SemanticGraphMetrics noopMetrics() {
+        return mock(SemanticGraphMetrics.class);
     }
 
     // ======================================================================

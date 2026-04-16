@@ -16,6 +16,7 @@ import ai.pipestream.data.v1.ModuleLogOrigin;
 import ai.pipestream.data.v1.PipeDoc;
 import ai.pipestream.data.v1.ProcessConfiguration;
 import ai.pipestream.module.semanticgraph.config.SemanticGraphStepOptions;
+import ai.pipestream.module.semanticgraph.metrics.SemanticGraphMetrics;
 import ai.pipestream.module.semanticgraph.pipeline.SemanticGraphPipelineService;
 import ai.pipestream.module.semanticgraph.retry.SemanticGraphRetryClassifier;
 import ai.pipestream.module.semanticgraph.retry.SemanticGraphRetryClassifier.ErrorCategory;
@@ -29,6 +30,8 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import org.jboss.logging.Logger;
+
+import java.time.Duration;
 
 /**
  * Thin gRPC wrapper over {@link SemanticGraphPipelineService} per DESIGN.md §7.3.
@@ -72,11 +75,15 @@ public class SemanticGraphGrpcImpl implements PipeStepProcessorService {
     SemanticGraphPipelineService pipelineService;
 
     @Inject
+    SemanticGraphMetrics metrics;
+
+    @Inject
     BuildInfoProvider buildInfoProvider;
 
     @Override
     public Uni<ProcessDataResponse> processData(ProcessDataRequest request) {
-        long startMs = System.currentTimeMillis();
+        final long startMs = System.currentTimeMillis();
+        metrics.docStarted();
 
         // Sync-phase validation: null request, missing doc, options parse.
         final PipeDoc inputDoc;
@@ -95,9 +102,11 @@ public class SemanticGraphGrpcImpl implements PipeStepProcessorService {
             options = parseOptions(request.getConfig());
         } catch (IllegalArgumentException e) {
             log.warnf("Rejecting request: %s", e.getMessage());
+            metrics.docFailed();
             return Uni.createFrom().item(createErrorResponse(e.getMessage(), e));
         } catch (Exception e) {
             log.warnf("Error preparing request: %s", e.getMessage());
+            metrics.docFailed();
             return Uni.createFrom().item(
                     createErrorResponse("Invalid SemanticGraphStepOptions JSON: " + e.getMessage(), e));
         }
@@ -107,17 +116,23 @@ public class SemanticGraphGrpcImpl implements PipeStepProcessorService {
         // DJL / boundary failures via the returned Uni.
         try {
             return pipelineService.process(inputDoc, options, pipeStepName)
-                    .map(outputDoc -> buildSuccessResponse(inputDoc, outputDoc, startMs))
+                    .map(outputDoc -> {
+                        metrics.docCompleted(Duration.ofMillis(System.currentTimeMillis() - startMs));
+                        return buildSuccessResponse(inputDoc, outputDoc, startMs);
+                    })
                     .onFailure().recoverWithItem(throwable -> {
+                        metrics.docFailed();
                         String msg = "Error in SemanticGraphService: " + throwable.getMessage();
                         log.errorf(throwable, "%s", msg);
                         return createErrorResponse(msg, throwable);
                     });
         } catch (IllegalArgumentException e) {
             log.warnf("INVALID_ARGUMENT: %s", e.getMessage());
+            metrics.docFailed();
             return Uni.createFrom().item(createErrorResponse(e.getMessage(), e));
         } catch (IllegalStateException e) {
             log.warnf("FAILED_PRECONDITION: %s", e.getMessage());
+            metrics.docFailed();
             return Uni.createFrom().item(createErrorResponse(e.getMessage(), e));
         }
     }
