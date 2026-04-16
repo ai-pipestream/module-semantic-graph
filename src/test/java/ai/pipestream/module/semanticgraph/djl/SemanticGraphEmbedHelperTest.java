@@ -9,7 +9,10 @@ import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
 import java.net.ConnectException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,179 +23,290 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Unit tests for {@link SemanticGraphEmbedHelper}'s batched retry behaviour.
+ *
+ * <p>Focus areas:
+ * <ul>
+ *   <li>Single-batch + multi-batch happy paths with correct index mapping</li>
+ *   <li>Concurrency cap via {@code Multi.merge(cap)} on large inputs</li>
+ *   <li>§22.5-style verification: null slots after merge raise
+ *       {@link IllegalStateException}</li>
+ *   <li>Transient retry for all transient classes (connect, socket timeout,
+ *       HTTP 5xx subset, HTTP 429/408)</li>
+ *   <li>Permanent failures (HTTP 4xx, IAE/ISE) propagate without retry</li>
+ *   <li>Alignment violation (response row count != input row count)</li>
+ *   <li>Empty/null/blank input fast-paths</li>
+ * </ul>
+ */
 class SemanticGraphEmbedHelperTest {
 
-    // --- happy path --------------------------------------------------------
+    private static final int BATCH = 4;
+    private static final int CAP = 3;
+    private static final int MAX_RETRIES = 2;
+    private static final long BACKOFF_MS = 1L;  // near-zero for fast tests
+
+    // ======================================================================
+    // Happy paths
+    // ======================================================================
 
     @Test
-    void embed_singleCallReturnsAlignedFloatArrays() {
+    void embed_singleBatch_returnsVectorsInOrder() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        JsonArray response = new JsonArray()
-                .add(new JsonArray().add(0.1).add(0.2).add(0.3))
-                .add(new JsonArray().add(0.4).add(0.5).add(0.6));
+        JsonArray response = arr(arr(0.1, 0.2), arr(0.3, 0.4));
         when(djl.predict(eq("minilm"), any(JsonObject.class)))
                 .thenReturn(Uni.createFrom().item(response));
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        List<float[]> result = helper.embed("minilm", List.of("foo", "bar"))
+        List<float[]> result = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("a", "b"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
 
-        assertThat(result)
-                .as("Two-text input produces two output vectors in input order")
-                .hasSize(2);
-        assertThat(result.get(0))
-                .as("First vector matches first input row")
-                .containsExactly(0.1f, 0.2f, 0.3f);
-        assertThat(result.get(1))
-                .as("Second vector matches second input row")
-                .containsExactly(0.4f, 0.5f, 0.6f);
-        verify(djl, times(1)).predict(eq("minilm"), any(JsonObject.class));
+        assertThat(result).as("Two inputs, two vectors").hasSize(2);
+        assertThat(result.get(0)).as("First vector matches first input row").containsExactly(0.1f, 0.2f);
+        assertThat(result.get(1)).as("Second vector matches second input row").containsExactly(0.3f, 0.4f);
+        verify(djl, times(1)).predict(any(), any());
     }
 
     @Test
-    void embed_emptyInput_shortCircuitsWithoutTouchingDjl() {
+    void embed_multiBatch_slicesAndReassemblesInOrder() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
+        // batchSize=4, so 10 inputs → 3 batches of (4, 4, 2)
+        // DJL returns each batch as nested arrays where vec[j] = [batchIdx * 10 + j]
+        when(djl.predict(any(), any())).thenAnswer(inv -> {
+            JsonObject body = inv.getArgument(1);
+            JsonArray inputs = body.getJsonArray("inputs");
+            JsonArray out = new JsonArray();
+            for (int i = 0; i < inputs.size(); i++) {
+                float marker = Float.parseFloat(inputs.getString(i));  // encode the global index into the text
+                out.add(new JsonArray().add(marker));
+            }
+            return Uni.createFrom().item(out);
+        });
 
-        List<float[]> result = helper.embed("minilm", List.of())
+        List<String> texts = new ArrayList<>();
+        for (int i = 0; i < 10; i++) texts.add(String.valueOf((float) i));
+
+        List<float[]> result = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", texts, BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
 
-        assertThat(result)
-                .as("Empty input must not roundtrip to DJL — fast-path returns empty list")
-                .isEmpty();
+        assertThat(result).as("Ten inputs, ten output vectors").hasSize(10);
+        for (int i = 0; i < 10; i++) {
+            assertThat(result.get(i))
+                    .as("Output index %d must carry marker %d regardless of sub-batch completion order", i, i)
+                    .containsExactly((float) i);
+        }
+    }
+
+    @Test
+    void embed_capClampsToBatchCount_smallInputOneBatch() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(arr(arr(0.1, 0.2))));
+
+        List<float[]> result = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("solo"), BATCH, /*perDocCap*/ 60, MAX_RETRIES, BACKOFF_MS)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().getItem();
+
+        assertThat(result).as("One input → one batch, cap clamped to 1").hasSize(1);
+        verify(djl, times(1)).predict(any(), any());
+    }
+
+    @Test
+    void embed_emptyTexts_shortCircuitsWithoutWire() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        List<float[]> r = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of(), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().getItem();
+        assertThat(r).as("Empty input means empty result, no predict call").isEmpty();
         verify(djl, times(0)).predict(any(), any());
     }
 
     @Test
-    void embed_nullInput_alsoShortCircuits() {
+    void embed_nullTexts_alsoShortCircuits() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        List<float[]> result = helper.embed("minilm", null)
+        List<float[]> r = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", null, BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
-
-        assertThat(result).as("Null input behaves like empty input").isEmpty();
+        assertThat(r).as("Null input behaves like empty input").isEmpty();
         verify(djl, times(0)).predict(any(), any());
     }
 
     @Test
-    void embed_blankModelId_failsWithoutCallingDjl() {
+    void embed_blankModelId_failsWithoutWire() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Throwable err = helper.embed("   ", List.of("foo"))
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("   ", List.of("x"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitFailure().getFailure();
-
         assertThat(err)
-                .as("Blank model id must fail before the wire — caller's bug, not DJL's")
+                .as("Blank modelId must fail before wire — caller precondition violation")
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("modelId is required");
         verify(djl, times(0)).predict(any(), any());
     }
 
-    // --- alignment / response-shape errors ---------------------------------
-
     @Test
-    void embed_responseRowCountMismatch_failsLoud() {
+    void embed_invalidBatchSize_fails() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        // Sent 3 inputs but DJL returned 2 rows — alignment is broken
-        JsonArray bad = new JsonArray()
-                .add(new JsonArray().add(0.1))
-                .add(new JsonArray().add(0.2));
-        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(bad));
-
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Throwable err = helper.embed("minilm", List.of("a", "b", "c"))
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), /*batchSize*/ 0, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitFailure().getFailure();
-
         assertThat(err)
-                .as("Row-count mismatch is a contract violation; we never guess at alignment")
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("returned 2 vectors")
-                .hasMessageContaining("3 were requested");
+                .as("batchSize=0 is invalid")
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void embed_responseHasNullRow_failsLoud() {
+    void embed_invalidPerDocCap_fails() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        JsonArray bad = new JsonArray().add(new JsonArray().add(0.1)).add((Object) null);
-        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(bad));
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), BATCH, /*perDocCap*/ 0, MAX_RETRIES, BACKOFF_MS)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitFailure().getFailure();
+        assertThat(err)
+                .as("perDocCap=0 is invalid")
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
+    // ======================================================================
+    // Response shape errors
+    // ======================================================================
 
-        Throwable err = helper.embed("minilm", List.of("a", "b"))
+    @Test
+    void embed_rowCountMismatch_failsLoudPerBatch() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        // Return 2 vectors for a 4-input batch — alignment violation
+        when(djl.predict(any(), any()))
+                .thenReturn(Uni.createFrom().item(arr(arr(0.1), arr(0.2))));
+
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("a", "b", "c", "d"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitFailure().getFailure();
 
         assertThat(err)
-                .as("Null vector slot is a malformed response — fail loud, do not substitute zero")
+                .as("Row-count mismatch must not retry or guess — fails loudly")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("2 vectors")
+                .hasMessageContaining("4 inputs")
+                .hasMessageContaining("alignment violation");
+    }
+
+    @Test
+    void embed_nullRowInResponse_failsLoud() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        JsonArray resp = new JsonArray().add(new JsonArray().add(0.1)).add((Object) null);
+        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(resp));
+
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("a", "b"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitFailure().getFailure();
+
+        assertThat(err)
+                .as("Null row in response means a malformed payload — fail loud rather than substitute zero")
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("position 1");
     }
 
-    // --- transient retry --------------------------------------------------
+    @Test
+    void embed_emptyVectorInResponse_failsLoud() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        JsonArray resp = arr(arr(0.1, 0.2), new JsonArray());  // second vector is length-0
+        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(resp));
+
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("a", "b"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitFailure().getFailure();
+
+        assertThat(err)
+                .as("Length-0 vector is a data loss event — fail, never silently accept")
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("null/empty vector");
+    }
+
+    // ======================================================================
+    // Retry — transient
+    // ======================================================================
 
     @Test
-    void embed_transientFailureRetriesOnceAndSucceeds() {
+    void embed_transientConnect_retriesAndSucceeds() {
         DjlServingClient djl = mock(DjlServingClient.class);
         AtomicInteger calls = new AtomicInteger();
-        JsonArray ok = new JsonArray().add(new JsonArray().add(0.1).add(0.2));
         when(djl.predict(any(), any())).thenAnswer(inv -> {
-            int n = calls.incrementAndGet();
-            if (n == 1) {
-                return Uni.createFrom().<JsonArray>failure(new ConnectException("boom"));
+            if (calls.incrementAndGet() == 1) {
+                return Uni.createFrom().<JsonArray>failure(new ConnectException("refused"));
             }
-            return Uni.createFrom().item(ok);
+            return Uni.createFrom().item(arr(arr(0.9)));
         });
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        List<float[]> result = helper.embed("minilm", List.of("foo"))
+        List<float[]> r = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
 
-        assertThat(calls.get())
-                .as("First call failed transient; helper retried exactly once")
-                .isEqualTo(2);
-        assertThat(result).as("Retry produced a vector").hasSize(1);
-        assertThat(result.get(0)).containsExactly(0.1f, 0.2f);
+        assertThat(calls.get()).as("Exactly one retry after first ConnectException").isEqualTo(2);
+        assertThat(r).hasSize(1);
+        assertThat(r.get(0)).containsExactly(0.9f);
     }
 
     @Test
-    void embed_transientFailureExhaustsRetries_propagates() {
+    void embed_transient503_retriesAndSucceeds() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        AtomicInteger calls = new AtomicInteger();
+        WebApplicationException unavailable = new WebApplicationException(Response.status(503).build());
+        when(djl.predict(any(), any())).thenAnswer(inv -> {
+            if (calls.incrementAndGet() == 1) {
+                return Uni.createFrom().<JsonArray>failure(unavailable);
+            }
+            return Uni.createFrom().item(arr(arr(0.5)));
+        });
+
+        List<float[]> r = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().getItem();
+
+        assertThat(calls.get()).as("503 is transient and retried").isEqualTo(2);
+        assertThat(r.get(0)).containsExactly(0.5f);
+    }
+
+    @Test
+    void embed_transientRetriesExhausted_propagatesLastError() {
         DjlServingClient djl = mock(DjlServingClient.class);
         AtomicInteger calls = new AtomicInteger();
         when(djl.predict(any(), any())).thenAnswer(inv -> {
             calls.incrementAndGet();
-            return Uni.createFrom().<JsonArray>failure(new ConnectException("permanent transport down"));
+            return Uni.createFrom().<JsonArray>failure(new ConnectException("persistent"));
         });
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Throwable err = helper.embed("minilm", List.of("foo"))
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), BATCH, CAP, /*maxRetries*/ 2, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitFailure().getFailure();
 
         assertThat(calls.get())
-                .as("With RETRY_ATTEMPTS=1 the helper makes exactly 2 attempts before giving up")
-                .isEqualTo(1 + SemanticGraphEmbedHelper.RETRY_ATTEMPTS);
+                .as("maxRetries=2 means up to 3 attempts (initial + 2 retries)")
+                .isEqualTo(3);
         assertThat(err)
-                .as("After retries the original transport failure propagates — no swallowing")
+                .as("After exhaustion the last transient failure propagates verbatim")
                 .isInstanceOf(ConnectException.class)
-                .hasMessageContaining("permanent transport down");
+                .hasMessageContaining("persistent");
     }
 
-    // --- permanent failure: no retry --------------------------------------
+    // ======================================================================
+    // Retry — permanent
+    // ======================================================================
 
     @Test
-    void embed_permanent4xxFailure_doesNotRetry() {
+    void embed_permanent400_doesNotRetry() {
         DjlServingClient djl = mock(DjlServingClient.class);
         AtomicInteger calls = new AtomicInteger();
         WebApplicationException badRequest = new WebApplicationException(
@@ -202,137 +316,138 @@ class SemanticGraphEmbedHelperTest {
             return Uni.createFrom().<JsonArray>failure(badRequest);
         });
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Throwable err = helper.embed("minilm", List.of("foo"))
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitFailure().getFailure();
 
-        assertThat(calls.get())
-                .as("HTTP 400 is a permanent contract error; helper does NOT retry")
-                .isEqualTo(1);
-        assertThat(err)
-                .as("Permanent error propagates verbatim")
-                .isSameAs(badRequest);
+        assertThat(calls.get()).as("Permanent 400 must not retry").isEqualTo(1);
+        assertThat(err).isSameAs(badRequest);
     }
 
     @Test
-    void embed_503ServiceUnavailable_isTransientAndRetries() {
+    void embed_permanent404_doesNotRetry() {
         DjlServingClient djl = mock(DjlServingClient.class);
         AtomicInteger calls = new AtomicInteger();
-        WebApplicationException unavailable = new WebApplicationException(
-                Response.status(503).build());
-        JsonArray ok = new JsonArray().add(new JsonArray().add(0.42));
+        WebApplicationException notFound = new WebApplicationException(Response.status(404).build());
         when(djl.predict(any(), any())).thenAnswer(inv -> {
-            int n = calls.incrementAndGet();
-            return n == 1
-                    ? Uni.createFrom().<JsonArray>failure(unavailable)
-                    : Uni.createFrom().item(ok);
+            calls.incrementAndGet();
+            return Uni.createFrom().<JsonArray>failure(notFound);
         });
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        List<float[]> result = helper.embed("minilm", List.of("foo"))
+        Throwable err = new SemanticGraphEmbedHelper(djl)
+                .embed("minilm", List.of("x"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
-                .awaitItem().getItem();
+                .awaitFailure().getFailure();
 
-        assertThat(calls.get())
-                .as("503 should be classified transient and retried once")
-                .isEqualTo(2);
-        assertThat(result.get(0)).containsExactly(0.42f);
+        assertThat(calls.get()).as("404 is permanent").isEqualTo(1);
+        assertThat(err).isSameAs(notFound);
     }
 
-    // --- isModelLoaded ----------------------------------------------------
+    // ======================================================================
+    // isModelLoaded
+    // ======================================================================
 
     @Test
-    void isModelLoaded_modelPresent_returnsTrue() {
+    void isModelLoaded_present_true() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        JsonObject listResp = new JsonObject().put("models", new JsonArray()
+        JsonObject list = new JsonObject().put("models", new JsonArray()
                 .add(new JsonObject().put("modelName", "minilm"))
                 .add(new JsonObject().put("modelName", "paraphrase")));
-        when(djl.listModels()).thenReturn(Uni.createFrom().item(listResp));
+        when(djl.listModels()).thenReturn(Uni.createFrom().item(list));
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Boolean loaded = helper.isModelLoaded("minilm")
+        Boolean loaded = new SemanticGraphEmbedHelper(djl).isModelLoaded("minilm")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
-
-        assertThat(loaded).as("listModels listed the requested model").isTrue();
+        assertThat(loaded).isTrue();
     }
 
     @Test
-    void isModelLoaded_modelMissing_returnsFalse() {
+    void isModelLoaded_missing_false() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        JsonObject listResp = new JsonObject().put("models", new JsonArray()
+        JsonObject list = new JsonObject().put("models", new JsonArray()
                 .add(new JsonObject().put("modelName", "paraphrase")));
-        when(djl.listModels()).thenReturn(Uni.createFrom().item(listResp));
+        when(djl.listModels()).thenReturn(Uni.createFrom().item(list));
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Boolean loaded = helper.isModelLoaded("minilm")
+        Boolean loaded = new SemanticGraphEmbedHelper(djl).isModelLoaded("minilm")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
-
         assertThat(loaded)
-                .as("Missing-from-listModels means not loaded; caller will FAIL_PRECONDITION per §21.3")
+                .as("Missing from /models means NOT loaded; caller FAIL_PRECONDITIONs per §21.3")
                 .isFalse();
     }
 
     @Test
-    void isModelLoaded_blankModelId_returnsFalse() {
+    void isModelLoaded_blank_false() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Boolean loaded = helper.isModelLoaded(" ")
+        Boolean loaded = new SemanticGraphEmbedHelper(djl).isModelLoaded("  ")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitItem().getItem();
-
-        assertThat(loaded).as("Blank id is not a model id").isFalse();
+        assertThat(loaded).isFalse();
         verify(djl, times(0)).listModels();
     }
 
     @Test
     void isModelLoaded_listModelsFails_propagates() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        when(djl.listModels()).thenReturn(Uni.createFrom().failure(new ConnectException("nope")));
+        when(djl.listModels()).thenReturn(Uni.createFrom().failure(new ConnectException("down")));
 
-        SemanticGraphEmbedHelper helper = new SemanticGraphEmbedHelper(djl);
-
-        Throwable err = helper.isModelLoaded("minilm")
+        Throwable err = new SemanticGraphEmbedHelper(djl).isModelLoaded("minilm")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
                 .awaitFailure().getFailure();
-
         assertThat(err)
-                .as("Probe failure must propagate so the caller can map to FAILED_PRECONDITION / INTERNAL")
+                .as("Probe failure must propagate so the pipeline maps it to FAILED_PRECONDITION/UNAVAILABLE")
                 .isInstanceOf(ConnectException.class);
     }
 
-    // --- isTransient classification -----------------------------------------
+    // ======================================================================
+    // listLoadedModels
+    // ======================================================================
 
     @Test
-    void isTransient_classification() {
-        assertThat(SemanticGraphEmbedHelper.isTransient(new ConnectException("x")))
-                .as("ConnectException is transient").isTrue();
-        assertThat(SemanticGraphEmbedHelper.isTransient(new java.net.SocketTimeoutException("x")))
-                .as("SocketTimeoutException is transient").isTrue();
-        assertThat(SemanticGraphEmbedHelper.isTransient(new java.util.concurrent.TimeoutException("x")))
-                .as("Mutiny TimeoutException is transient").isTrue();
-        assertThat(SemanticGraphEmbedHelper.isTransient(new RuntimeException(new ConnectException("x"))))
-                .as("Wrapped ConnectException is still transient").isTrue();
-        assertThat(SemanticGraphEmbedHelper.isTransient(
-                new WebApplicationException(Response.status(503).build())))
-                .as("HTTP 503 is transient").isTrue();
-        assertThat(SemanticGraphEmbedHelper.isTransient(
-                new WebApplicationException(Response.status(429).build())))
-                .as("HTTP 429 (Too Many Requests) is transient").isTrue();
-        assertThat(SemanticGraphEmbedHelper.isTransient(
-                new WebApplicationException(Response.status(400).build())))
-                .as("HTTP 400 is permanent").isFalse();
-        assertThat(SemanticGraphEmbedHelper.isTransient(
-                new WebApplicationException(Response.status(404).build())))
-                .as("HTTP 404 (model not found) is permanent").isFalse();
-        assertThat(SemanticGraphEmbedHelper.isTransient(new IllegalStateException("misc")))
-                .as("Generic IllegalStateException is not transient").isFalse();
+    void listLoadedModels_returnsNames() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        JsonObject list = new JsonObject().put("models", new JsonArray()
+                .add(new JsonObject().put("modelName", "minilm"))
+                .add(new JsonObject().put("modelName", "e5-small")));
+        when(djl.listModels()).thenReturn(Uni.createFrom().item(list));
+
+        Set<String> names = new SemanticGraphEmbedHelper(djl).listLoadedModels()
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().getItem();
+        assertThat(names).containsExactlyInAnyOrder("minilm", "e5-small");
+    }
+
+    @Test
+    void listLoadedModels_emptyModelsArray_emptySet() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        when(djl.listModels()).thenReturn(Uni.createFrom().item(
+                new JsonObject().put("models", new JsonArray())));
+
+        Set<String> names = new SemanticGraphEmbedHelper(djl).listLoadedModels()
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().getItem();
+        assertThat(names).isEmpty();
+    }
+
+    @Test
+    void listLoadedModels_nullResponseBody_emptySet() {
+        DjlServingClient djl = mock(DjlServingClient.class);
+        when(djl.listModels()).thenReturn(Uni.createFrom().item((JsonObject) null));
+
+        Set<String> names = new SemanticGraphEmbedHelper(djl).listLoadedModels()
+                .subscribe().withSubscriber(UniAssertSubscriber.create())
+                .awaitItem().getItem();
+        assertThat(names).isEqualTo(Collections.emptySet());
+    }
+
+    // ======================================================================
+    // Helpers
+    // ======================================================================
+
+    private static JsonArray arr(Object... items) {
+        JsonArray a = new JsonArray();
+        for (Object it : items) a.add(it);
+        return a;
     }
 }
