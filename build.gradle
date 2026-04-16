@@ -106,11 +106,14 @@ test {
     systemProperty "java.util.logging.manager", "org.jboss.logmanager.LogManager"
     maxHeapSize = "4g"
     jvmArgs = ["-Xmx4g", "-XX:MaxMetaspaceSize=512m", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED"]
-    // Forward DJL integration-test overrides to the forked JVM so
-    // `-Ddjl.host=... -Ddjl.port=...` on the Gradle command line reaches
-    // SemanticGraphPipelineServiceIT. Gradle doesn't propagate sysprops
-    // to forked JVMs unless configured here.
-    systemProperties.putAll(System.getProperties().findAll { it.key.toString().startsWith("djl.") })
+    // Forward DJL + scale-fixture integration-test overrides to the forked
+    // JVM so `-Ddjl.host=... -Ddjl.port=... -Dr3.fixtures.stage2-100=...`
+    // on the Gradle command line reaches the ITs. Gradle doesn't propagate
+    // sysprops to forked JVMs unless configured here.
+    systemProperties.putAll(System.getProperties().findAll {
+        String k = it.key.toString()
+        k.startsWith("djl.") || k.startsWith("r3.fixtures.")
+    })
 }
 
 // Exclude stress tests from default integration test runs.
