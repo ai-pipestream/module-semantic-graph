@@ -10,6 +10,6 @@ jobs:
   build-and-publish:
     uses: ai-pipestream/.github/.github/workflows/reusable-service-build.yml@main
     with:
-      docker-image-name: module-semantic-manager
+      docker-image-name: module-semantic-graph
       dockerfile-path: src/main/docker/Dockerfile.jvm
     secrets: inherit

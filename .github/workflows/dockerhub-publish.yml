@@ -8,11 +8,11 @@ on:
       base_image:
         description: 'Base GHCR image'
         required: true
-        default: 'ghcr.io/ai-pipestream/module-semantic-manager'
+        default: 'ghcr.io/ai-pipestream/module-semantic-graph'
       dockerhub_repo:
         description: 'Docker Hub repository'
         required: true
-        default: 'pipestreamai/module-semantic-manager'
+        default: 'pipestreamai/module-semantic-graph'
       tags:
         description: 'Space-separated tags'
         required: true

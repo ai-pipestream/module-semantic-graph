@@ -51,7 +51,10 @@ dependencies {
     implementation 'io.quarkus:quarkus-grpc'
     implementation 'io.quarkus:quarkus-rest'
     implementation 'io.quarkus:quarkus-rest-jackson'
+    implementation 'io.quarkus:quarkus-rest-client'
+    implementation 'io.quarkus:quarkus-rest-client-jackson'
     implementation 'io.quarkus:quarkus-smallrye-health'
+    implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
     implementation 'io.quarkus:quarkus-smallrye-stork'
     implementation 'io.quarkus:quarkus-hibernate-validator'
     implementation 'io.quarkus:quarkus-cache'
@@ -83,6 +86,15 @@ dependencies {
     testImplementation 'io.rest-assured:rest-assured'
     testImplementation 'ai.pipestream:pipestream-test-support'
     testImplementation libs.assertj.core
+    testImplementation libs.testcontainers.core
+    testImplementation libs.testcontainers.junit
+
+    // Stage-2 fixture artifact for SemanticGraphScaleIT — published from
+    // https://github.com/ai-pipestream/embedder-pipedocs-court via
+    // `./gradlew publishToMavenLocal` until CI/CD wires up Sonatype.
+    // Resolves through ~/.m2; classpath layout under
+    // /fixtures/court/stage2_{variant}_{1000|full_100}/doc_NNNN.pb.gz.
+    testImplementation 'ai.pipestream:embedder-pipedocs-court:0.1.0-SNAPSHOT'
 
     runtimeOnly libs.quarkus.logging.manager
 }
@@ -101,6 +113,14 @@ test {
     systemProperty "java.util.logging.manager", "org.jboss.logmanager.LogManager"
     maxHeapSize = "4g"
     jvmArgs = ["-Xmx4g", "-XX:MaxMetaspaceSize=512m", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED"]
+    // Forward DJL + scale-fixture integration-test overrides to the forked
+    // JVM so `-Ddjl.host=... -Ddjl.port=... -Dr3.fixtures.stage2-100=...`
+    // on the Gradle command line reaches the ITs. Gradle doesn't propagate
+    // sysprops to forked JVMs unless configured here.
+    systemProperties.putAll(System.getProperties().findAll {
+        String k = it.key.toString()
+        k.startsWith("djl.") || k.startsWith("r3.fixtures.")
+    })
 }
 
 // Exclude stress tests from default integration test runs.
@@ -146,9 +166,9 @@ publishing {
                 artifact.builtBy tasks.named('quarkusBuild')
             }
             pom { pom ->
-                name.set('Semantic Manager Module')
-                description.set('Semantic indexing coordinator module for the Pipestream platform')
-                url.set('https://github.com/ai-pipestream/module-semantic-manager')
+                name.set('Semantic Graph Module')
+                description.set('Stage 3 of the semantic pipeline: centroids and semantic-boundary detection over fully-embedded chunks')
+                url.set('https://github.com/ai-pipestream/module-semantic-graph')
 
                 licenses {
                     license {
@@ -165,9 +185,9 @@ publishing {
                 }
 
                 scm {
-                    connection.set('scm:git:git://github.com/ai-pipestream/module-semantic-manager.git')
-                    developerConnection.set('scm:git:ssh://github.com/ai-pipestream/module-semantic-manager.git')
-                    url.set('https://github.com/ai-pipestream/module-semantic-manager')
+                    connection.set('scm:git:git://github.com/ai-pipestream/module-semantic-graph.git')
+                    developerConnection.set('scm:git:ssh://github.com/ai-pipestream/module-semantic-graph.git')
+                    url.set('https://github.com/ai-pipestream/module-semantic-graph')
                 }
             }
         }
@@ -179,7 +199,7 @@ publishing {
         if (System.getenv("GITHUB_ACTOR") != null) {
             maven {
                 name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/ai-pipestream/module-semantic-manager")
+                url = uri("https://maven.pkg.github.com/ai-pipestream/module-semantic-graph")
                 credentials {
                     username = System.getenv("GITHUB_ACTOR")
                     password = System.getenv("GITHUB_TOKEN")
