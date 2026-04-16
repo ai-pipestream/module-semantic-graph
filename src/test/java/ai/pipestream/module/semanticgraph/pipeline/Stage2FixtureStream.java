@@ -21,12 +21,12 @@ import java.util.zip.GZIPInputStream;
  * — one non-delimited gzipped {@link PipeDoc} per file, stable
  * {@code doc_0001} ... {@code doc_NNNN} naming.
  *
- * <p>R3's scale ITs need to drive 100- or 1000-document fixtures through the
+ * <p>The scale ITs need to drive 100- or 1000-document fixtures through the
  * pipeline without holding the whole set in memory (the 1000-doc set lands at
  * ~99–186 MB on disk depending on chunker variant; the 100-doc full set adds
  * sentences_internal SPRs and lands at ~120–136 MB). This loader reads one
  * {@link PipeDoc} at a time and presents the results as a {@link Stream} so
- * the IT can {@code .map} them through R3 and drop each reference before the
+ * the IT can {@code .map} them through the pipeline and drop each reference before the
  * next one materialises.
  *
  * <h2>Resource convention</h2>

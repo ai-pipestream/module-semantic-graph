@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Central Micrometer metrics bean for module-semantic-graph. Mirrors the
  * D(f)-shaped observability model used by {@code module-embedder}'s
  * {@code EmbedderMetrics}: report how many docs are in flight on this
- * JVM right now, how many centroids / boundary groups R3 produces per
+ * JVM right now, how many centroids / boundary groups the pipeline produces per
  * doc, and how long each phase takes.
  *
  * <h2>Meters published</h2>

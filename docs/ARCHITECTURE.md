@@ -1,13 +1,12 @@
-# R3 — module-semantic-graph — Architecture
+# module-semantic-graph — Architecture
 
-**Not code. Not a plan. The thing you sign off before I write code.**
-
-Scope: this document covers only R3 (the semantic-graph step). It does NOT
-cover R4 (sidecar rewire) or R5 (E2E gates). It is written against:
+Scope: this document covers only the semantic-graph step (Stage 3). It does
+not cover the sidecar rewire or the E2E gates that follow it. It is written
+against:
 
 - `pipestream-protos/docs/semantic-pipeline/DESIGN.md` (§3–§22.6, with §21 overrides)
-- `pipestream-protos/docs/semantic-pipeline/PLAN.md` §R3 work packet
-- The R1 chunker and R2 embedder as they exist on their respective `main`s
+- `pipestream-protos/docs/semantic-pipeline/PLAN.md` semantic-graph work packet
+- The chunker and embedder modules as they exist on their respective `main`s
 - The `pipestream-wiremock-server` invariants + fixtures + step mocks as
   currently published on its `main`
 
@@ -16,9 +15,9 @@ from memory.
 
 ---
 
-## 1. What R3 actually does, in one paragraph
+## 1. What the module actually does, in one paragraph
 
-R3 takes a Stage-2 `PipeDoc` (fully embedded by R2), walks its
+This module takes a Stage-2 `PipeDoc` (fully embedded by the embedder), walks its
 `search_metadata.semantic_results[]`, and **appends** new SPRs without
 touching the existing ones:
 
@@ -31,10 +30,10 @@ touching the existing ones:
   the sentence-shaped Stage-2 SPR with that embedder, run topic-boundary
   detection on its sentence vectors, concatenate each resulting sentence
   group's text, **re-embed** the grouped text via DJL Serving, and emit one
-  boundary SPR. Re-embedding is the only I/O R3 does.
+  boundary SPR. Re-embedding is the only I/O the module does.
 - Lex-sort `semantic_results[]` at the end.
 
-Stage-2 SPRs are preserved byte-for-byte. R3 only appends.
+Stage-2 SPRs are preserved byte-for-byte. The module only appends.
 
 ---
 
@@ -115,7 +114,7 @@ Looked at `EmbedderGrpcImpl.java:120–181`. The pattern:
 
 ### 2.4 SemanticPipelineInvariants shapes (from the wiremock 640-line version)
 
-**`assertPostEmbedder(doc)`** — R3's **input** gate:
+**`assertPostEmbedder(doc)`** — the module's **input** gate:
 
 1. `search_metadata` set
 2. Every SPR: non-empty `embedding_config_id`, `source_field_name`,
@@ -131,7 +130,7 @@ Looked at `EmbedderGrpcImpl.java:120–181`. The pattern:
    `(source_field, chunk_config_id)` pair in results
 6. Lex-sorted on `(source_field_name, chunk_config_id, embedding_config_id, result_id)`
 
-**`assertPostSemanticGraph(doc)`** — R3's **output** contract:
+**`assertPostSemanticGraph(doc)`** — the module's **output** contract:
 
 1. All of `assertPostEmbedder`'s per-SPR structural checks still hold on every SPR
 2. Centroid SPRs (`chunk_config_id` ends in `_centroid`):
@@ -151,7 +150,7 @@ Looked at `EmbedderGrpcImpl.java:120–181`. The pattern:
 
 **`assertPostSemanticGraph` does NOT** check deep-equal Stage-2 preservation —
 the wiremock-server javadoc explicitly notes that this needs the Stage-2 input
-as context and is the caller's responsibility. R3's tests must do the
+as context and is the caller's responsibility. the module's tests must do the
 deep-equal check themselves.
 
 ### 2.5 Stage-3 SPR shapes — from the wiremock fixture + proto definitions
@@ -229,20 +228,20 @@ as a Quarkus extension. Not installed to local Maven (checked
 `~/.m2/repository/ai/pipestream/module/`). Has single method set (`name`,
 `supports`, `embed`) as noted above.
 
-### 2.7 Wiremock mocks + showcase test — what R3 must honor
+### 2.7 Wiremock mocks + showcase test — what the module must honor
 
 - `ChunkerStepMock` → returns Stage-1 fixture on `x-module-name: chunker` header
 - `EmbedderStepMock` → returns Stage-2 fixture on `x-module-name: embedder` header
 - `SemanticGraphStepMock` → returns Stage-3 fixture on `x-module-name: semantic-graph` header
 - `SemanticPipelineShowcaseTest` runs all three and asserts each `assertPost*` invariant
 
-R3's integration test can use `EmbedderStepMock` as its **upstream** (to feed
-a Stage-2 fixture in) but R3 ITSELF replaces `SemanticGraphStepMock` with the
+the module's integration test can use `EmbedderStepMock` as its **upstream** (to feed
+a Stage-2 fixture in) but the module ITSELF replaces `SemanticGraphStepMock` with the
 real gRPC impl. The real impl's output must pass `assertPostSemanticGraph`.
 
 The canned `buildStage3PipeDoc()` fixture uses 4-dim deterministic vectors
 `[0.1, 0.2, 0.3, 0.4]` and literal strings like `"semantic_v1"` for
-`semantic_config_id`. R3's real output will have different values; the
+`semantic_config_id`. the module's real output will have different values; the
 contract is on the **invariant assertions**, not byte-equality to the fixture.
 
 ---
@@ -256,7 +255,7 @@ ai.pipestream.module.semanticgraph
 │   ├── SemanticGraphStepOptions               already written in Phase B1; needs no changes
 │   └── SemanticGraphStepDefaults              NEW — env-override merger mirror of EmbedderStepDefaults
 ├── directive
-│   └── (nothing R3-specific — directives are read from the doc, not resolved per-config)
+│   └── (nothing module-specific — directives are read from the doc, not resolved per-config)
 ├── djl
 │   ├── DjlServingClient                       local stand-in; package path matches pipestream-embedder-djl
 │   └── SemanticGraphEmbedHelper               NEW rewrite — batches + retries per §2.1/§2.2
@@ -300,7 +299,7 @@ public static String assertPostChunker(PipeDoc doc) {
 }
 ```
 
-I'll follow that pattern. R3's main needs at minimum `assertPostEmbedder(doc)
+I'll follow that pattern. the module's main needs at minimum `assertPostEmbedder(doc)
 -> String` for the input gate. `assertPostSemanticGraph(doc) -> String` is
 useful as a self-check before returning the output (catches bugs early), and
 I'll include it.
@@ -430,7 +429,7 @@ SemanticGraphGrpcImpl.processData(request)
     │   outputDoc = inputDoc.toBuilder().setSearchMetadata(sm.toBuilder().clearSemanticResults().addAll(merged)).build()
     │
     ├── self-check (defensive; catches bugs before the wire)
-    │   invariants.assertPostSemanticGraph(outputDoc) → if non-null → ISE "R3 produced invalid output: ..."
+    │   invariants.assertPostSemanticGraph(outputDoc) → if non-null → ISE "Module produced invalid output: ..."
     │
     └── emit outputDoc via Uni<PipeDoc>
 
@@ -540,7 +539,7 @@ dependencies {
 }
 ```
 
-- Pro: zero duplication. R3 always compiles against the real source.
+- Pro: zero duplication. The module always compiles against the real source.
 - Pro: no publication dependency. Works in dev and in CI as long as the
   sibling repo is present.
 - Con: CI has to clone + ./gradlew build the sibling repo first. Dockerfile
@@ -557,7 +556,7 @@ implementation "ai.pipestream.module:pipestream-embedder-djl-runtime:${version}"
 - Pro: cleanest; standard Maven dep.
 - Con: requires first PR against `pipestream-embedder-djl` to add
   `publishAllPublicationsToCentralPortalSnapshots` and run it. Out of scope
-  for this R3 session unless you prioritize.
+  for this session unless you prioritize.
 
 ### Option C — local stand-in for now, swap when (A) or (B) lands
 
@@ -565,13 +564,13 @@ implementation "ai.pipestream.module:pipestream-embedder-djl-runtime:${version}"
   `ai.pipestream.module.semanticgraph.djl` with the same `configKey =
   "djl-serving"`. Either keep the `pipestream-embedder-djl`'s
   `ai.pipestream.quarkus.djl.runtime.client` package (so swap = import
-  rename only) or use R3's own package.
-- Pro: zero blockers, R3 lands standalone.
+  rename only) or use the module's own package.
+- Pro: zero blockers, the module lands standalone.
 - Con: duplicated interface. Risks drift if `pipestream-embedder-djl`
   modifies its interface before we swap. Drift is mitigated by using the
   same method names + signatures, which have been stable for ~2 weeks.
 
-**My recommendation: C for this PR, follow up with B (publish the extension) as a separate small PR before R4.** Gets R3 unblocked. The local copy has a doc comment naming the swap plan and the upstream package path.
+**My recommendation: C for this PR, follow up with B (publish the extension) as a separate small PR later.** Gets the module unblocked. The local copy has a doc comment naming the swap plan and the upstream package path.
 
 ---
 
@@ -592,7 +591,7 @@ implementation "ai.pipestream.module:pipestream-embedder-djl-runtime:${version}"
 | §22.5-style final gate: null vector slot after batches | embed helper | `IllegalStateException` | `FAILED_PRECONDITION` | FAILURE + grpc_status=FAILED_PRECONDITION |
 | DJL transient (5xx, connect, timeout) after retry budget exhausted | embed helper Uni failure | pass-through transport exception | `UNAVAILABLE` | FAILURE + grpc_status=UNAVAILABLE |
 | DJL permanent (4xx, model not found) | embed helper Uni failure | `WebApplicationException` or similar | `INVALID_ARGUMENT` | FAILURE + grpc_status=INVALID_ARGUMENT |
-| Self-check: output fails `assertPostSemanticGraph` | pipeline emit | `IllegalStateException("R3 produced invalid output: ...")` | `FAILED_PRECONDITION` | FAILURE + grpc_status=FAILED_PRECONDITION |
+| Self-check: output fails `assertPostSemanticGraph` | pipeline emit | `IllegalStateException("Module produced invalid output: ...")` | `FAILED_PRECONDITION` | FAILURE + grpc_status=FAILED_PRECONDITION |
 | Unknown exception bubbling up | catch-all in `onFailure().recoverWithItem` | anything | `INTERNAL` | FAILURE + grpc_status=INTERNAL |
 
 **DESIGN.md §10.1 hard cap = INTERNAL** ambiguity: the spec classifies it
@@ -611,7 +610,7 @@ internal error — but I'll follow DESIGN if you prefer the literal text.
 4. **Hard-cap → INTERNAL vs FAILED_PRECONDITION**: literal DESIGN vs pragmatic? My rec: **FAILED_PRECONDITION** with a clear message naming the config knobs to tune.
 5. **Retry classifier + policy**: copy the two embedder classes verbatim, rename-only, OR re-implement slimmer? My rec: **copy verbatim**, name `SemanticGraphRetryPolicy` / `SemanticGraphRetryClassifier`. ~360 LOC shared logic, zero re-invention risk.
 6. **Output self-check (`assertPostSemanticGraph` before emit)**: include it or rely only on tests? My rec: **include it**. Catches bugs before they hit the engine, and the return-String version is cheap. If it ever fires in prod, it means our own code produced invalid output — that deserves FAILED_PRECONDITION + DLQ, not silent emission.
-7. **Single-placeholder-SPR edge cases**: what if Stage 2 has ZERO SPRs (doc had no matching text for any directive)? Currently the chunker emits zero SPRs; embedder passes through; R3 sees zero SPRs, emits zero new SPRs, lex-sorts empty, returns. That's valid per §5.2/5.3. Confirm.
+7. **Single-placeholder-SPR edge cases**: what if Stage 2 has ZERO SPRs (doc had no matching text for any directive)? Currently the chunker emits zero SPRs; embedder passes through; the semantic-graph step sees zero SPRs, emits zero new SPRs, lex-sorts empty, returns. That's valid per §5.2/5.3. Confirm.
 8. **Result-set-name template for boundary SPR**: DESIGN §4.3 suggests `"{source_label}_semantic_{embedder_id}"`. The directive's `field_name_template` placeholders are `{source_label}, {chunker_id}, {embedder_id}`. For boundary, `{chunker_id}="semantic"` works naturally in the template. Confirm or override.
 9. **`semantic_config_id` value**: I propose `"semantic:" + boundaryEmbeddingModelId`. Invariant only requires non-empty. Any preference?
 
@@ -674,7 +673,7 @@ wiremock `SemanticFixtureBuilder.buildStage2PipeDoc()` (or hand-rolled):
 - `EmbedderStepMock` served by an in-test WireMock instance (optional — we can feed Stage-2 directly without a mock layer; the mock is more useful for sidecar-style plumbing tests)
 
 Test: feed a Stage-2 doc whose `sentences_internal × minilm` SPR has 10
-sentence chunks with real MiniLM vectors. Run R3 with
+sentence chunks with real MiniLM vectors. Run the module with
 `compute_semantic_boundaries=true`. Assert:
 - `assertPostSemanticGraph` passes
 - 1 boundary SPR with between 2 and 10 chunks (depends on thresholds)
@@ -702,14 +701,14 @@ Proposed new phase ordering:
 
 ---
 
-## 10. Explicit non-goals for R3
+## 10. Explicit non-goals for the semantic-graph module
 
-- No OpenSearch interaction. R3 emits a PipeDoc; the sink / indexing does
+- No OpenSearch interaction. This module emits a PipeDoc; the sink / indexing does
   the rest.
 - No Redis. Centroids are CPU-local; boundary re-embed is ≤50 vectors per
   doc, not worth caching.
 - No cross-doc state. Everything is per-doc.
-- No engine changes. R3 is a `PipeStepProcessorService` like every other
+- No engine changes. This module is a `PipeStepProcessorService` like every other
   module.
 - No proto changes. Every field is existing (`CentroidMetadata`,
   `GranularityLevel`, `PoolingMethod`, `semantic_config_id`, etc.).

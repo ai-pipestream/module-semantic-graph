@@ -22,7 +22,7 @@ import java.util.Set;
 
 /**
  * Stage-invariant checkers for module-semantic-graph per DESIGN.md §5.2
- * (R3's input gate) and §5.3 (R3's output self-check).
+ * (input gate) and §5.3 (output self-check).
  *
  * <h2>Contract</h2>
  * <p>Each method returns {@code null} when the doc satisfies the invariant,
@@ -30,8 +30,8 @@ import java.util.Set;
  * non-null returns to gRPC status:
  * <ul>
  *   <li>Pre-condition failures (input gate) → {@code FAILED_PRECONDITION}</li>
- *   <li>Self-check failures on R3's own output → {@code FAILED_PRECONDITION}
- *       (defensive: means R3 produced an invalid shape and should be treated
+ *   <li>Self-check failures on the module's own output → {@code FAILED_PRECONDITION}
+ *       (defensive: means the pipeline produced an invalid shape and should be treated
  *       as a module bug, quarantine the doc, do not emit downstream)</li>
  * </ul>
  *
@@ -66,14 +66,14 @@ public final class SemanticPipelineInvariants {
     private SemanticPipelineInvariants() {}
 
     /**
-     * Validates the post-embedder (Stage-2) shape per DESIGN.md §5.2. R3 calls
+     * Validates the post-embedder (Stage-2) shape per DESIGN.md §5.2. the pipeline calls
      * this on its input {@link PipeDoc} before processing; a non-null return
      * is mapped to {@code FAILED_PRECONDITION}.
      *
      * <p>Empty {@code semantic_results[]} is valid (per §5.2, when no source
      * text matched any directive the upstream chunker and embedder both
-     * pass-through with zero SPRs). R3 inherits that interpretation; a
-     * zero-SPR doc flows through R3 unchanged.
+     * pass-through with zero SPRs). the module inherits that interpretation; a
+     * zero-SPR doc flows through the pipeline unchanged.
      *
      * @return {@code null} if valid; otherwise a one-line error message
      */
@@ -222,9 +222,9 @@ public final class SemanticPipelineInvariants {
     }
 
     /**
-     * Validates the post-semantic-graph (Stage-3) shape per DESIGN.md §5.3. R3
-     * calls this on its OUTPUT {@link PipeDoc} as a defensive self-check before
-     * emitting to the engine. A non-null return indicates R3 produced an
+     * Validates the post-semantic-graph (Stage-3) shape per DESIGN.md §5.3. The
+     * pipeline calls this on its OUTPUT {@link PipeDoc} as a defensive self-check before
+     * emitting to the engine. A non-null return indicates the pipeline produced an
      * invalid shape — that's a module bug; the caller maps it to
      * {@code FAILED_PRECONDITION} + quarantine.
      *
@@ -240,14 +240,14 @@ public final class SemanticPipelineInvariants {
 
     /**
      * Variant of {@link #assertPostSemanticGraph(PipeDoc)} that takes the
-     * runtime-configured boundary chunk cap. R3's own self-check passes the
+     * runtime-configured boundary chunk cap. the module's own self-check passes the
      * effective {@code max_semantic_chunks_per_doc} from
      * {@link ai.pipestream.module.semanticgraph.config.SemanticGraphStepOptions}
      * so a deployment that legitimately raises the cap (for long-document
      * corpora like court opinions) doesn't get its own valid output rejected
      * by an invariant frozen to the default.
      *
-     * <p>External callers without R3's options context should use the no-arg
+     * <p>External callers without the module's options context should use the no-arg
      * overload, which checks against {@link #MAX_SEMANTIC_CHUNKS_PER_DOC_DEFAULT}.
      */
     public static String assertPostSemanticGraph(PipeDoc doc, int boundaryChunkCap) {

@@ -42,7 +42,7 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Transport-agnostic R3 pipeline per DESIGN.md §7.3. Takes a Stage-2
+ * Transport-agnostic semantic-graph pipeline per DESIGN.md §7.3. Takes a Stage-2
  * {@link PipeDoc}, validates it, computes centroids + optional semantic
  * boundaries, appends new SPRs (Stage-2 SPRs preserved byte-for-byte),
  * lex-sorts, and returns Stage-3 shape.
@@ -176,12 +176,12 @@ public class SemanticGraphPipelineService {
         String err = SemanticPipelineInvariants.assertPostEmbedder(inputDoc);
         if (err != null) {
             throw new IllegalStateException(
-                    "R3 input doc failed post-embedder invariant (FAILED_PRECONDITION): " + err);
+                    "Input doc failed post-embedder invariant (FAILED_PRECONDITION): " + err);
         }
 
         SearchMetadata sm = inputDoc.getSearchMetadata();
 
-        // Directives may or may not be present by the time R3 runs (some engine
+        // Directives may or may not be present by the time the pipeline runs (some engine
         // configs clear them after processing). If present, validate uniqueness
         // and use them to identify sentence-shaped chunker configs; if absent
         // we fall through to SENTENCES_INTERNAL-only detection.
@@ -233,10 +233,10 @@ public class SemanticGraphPipelineService {
         }
 
         // Audit: surfaces the input shape in a grep-friendly line. Every
-        // R3 invocation logs exactly one of these at INFO so operators can
+        // pipeline invocation logs exactly one of these at INFO so operators can
         // replay traffic shape from module logs alone, without
         // back-reading metrics.
-        log.infof("R3 AUDIT prepare doc=%s step=%s directives=%d stage2_triples=%d "
+        log.infof("AUDIT prepare doc=%s step=%s directives=%d stage2_triples=%d "
                         + "sentence_configs_by_source=%s hasDocOutline=%s",
                 inputDoc.getDocId(), pipeStepName, directives.size(), byTriple.size(),
                 sentenceConfigsBySource,
@@ -732,13 +732,13 @@ public class SemanticGraphPipelineService {
         String err = SemanticPipelineInvariants.assertPostSemanticGraph(
                 outputDoc, prepared.options.effectiveMaxSemanticChunksPerDoc());
         if (err != null) {
-            throw new IllegalStateException("R3 produced invalid Stage-3 output: " + err);
+            throw new IllegalStateException("the pipeline produced invalid Stage-3 output: " + err);
         }
 
         // Audit: per-doc output shape. Log per-granularity centroid counts +
         // per-source boundary group counts so log-only replay can reconstruct
-        // Stage-3 shape without the PipeDoc. One grep for 'R3 AUDIT emit
-        // doc=<X>' gets the full R3 timeline for a doc: prepare, centroid,
+        // Stage-3 shape without the PipeDoc. One grep for 'AUDIT emit
+        // doc=<X>' gets the full pipeline timeline for a doc: prepare, centroid,
         // boundary, emit.
         int docCentroids = 0, paragraphCentroids = 0, sectionCentroids = 0;
         for (SemanticProcessingResult spr : centroidSprs) {
@@ -753,7 +753,7 @@ public class SemanticGraphPipelineService {
         for (SemanticProcessingResult spr : boundarySprs) {
             totalBoundaryChunks += spr.getChunksCount();
         }
-        log.infof("R3 AUDIT emit doc=%s stage2_preserved=%d doc_centroids=%d "
+        log.infof("AUDIT emit doc=%s stage2_preserved=%d doc_centroids=%d "
                         + "paragraph_centroids=%d section_centroids=%d boundary_sprs=%d "
                         + "boundary_chunks_total=%d final_spr_count=%d",
                 prepared.inputDoc.getDocId(), inputSm.getSemanticResultsCount(),

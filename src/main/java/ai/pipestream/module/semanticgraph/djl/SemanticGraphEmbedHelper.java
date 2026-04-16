@@ -32,7 +32,7 @@ import java.util.Set;
  * batch ~32 per model), and a monolithic predict call for a 50-chunk
  * boundary pass either errors at DJL's ingress or crashes its worker.
  *
- * <p>For the typical R3 boundary workload (≤50 groups per doc), this is
+ * <p>For the typical boundary workload (≤50 groups per doc), this is
  * 1–2 sub-batches that complete in parallel. The concurrency cap clamps
  * to {@code [1, batchCount]} so small inputs don't try to spawn cap
  * parallel requests for nothing.
@@ -58,7 +58,7 @@ import java.util.Set;
  * <p>{@link #isModelLoaded(String)} calls {@code /models} and checks whether
  * the target model name appears. Cached under Quarkus
  * {@code @CacheResult("djl-models-loaded")} with a 30s TTL so repeated
- * R3 calls don't hammer DJL Serving; cadence matches the scheduled refresh
+ * pipeline calls don't hammer DJL Serving; cadence matches the scheduled refresh
  * in {@code pipestream-embedder-djl}'s {@code DjlModelRegistry}.
  *
  * <h2>Swap plan</h2>

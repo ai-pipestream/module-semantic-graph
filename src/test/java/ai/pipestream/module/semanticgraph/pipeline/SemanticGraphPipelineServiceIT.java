@@ -76,7 +76,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       vectors, re-embeds boundary groups via the live model, assembles
  *       a Stage-3 doc that satisfies
  *       {@link SemanticPipelineInvariants#assertPostSemanticGraph}.</li>
- *   <li>Stage-2 SPRs are preserved byte-for-byte through R3.</li>
+ *   <li>Stage-2 SPRs are preserved byte-for-byte through the pipeline.</li>
  *   <li>p95 per-doc wall clock measurement against DESIGN.md §13
  *       semantic-graph gate (target ≤ 500 ms). Not enforced as an
  *       assertion — reported as a number the session can track.</li>
@@ -93,10 +93,10 @@ class SemanticGraphPipelineServiceIT {
     private static final String DJL_SERVING_VERSION = "0.36.0";
     /** DJL model name. Defaults to {@code minilm} to match the
      *  embedder-pipedocs-court fixture's {@code embedding_config_id} naming
-     *  convention. Override with {@code -Dr3.fixtures.boundary-model=...}
+     *  convention. Override with {@code -Dfixtures.boundary-model=...}
      *  if your DJL has it registered under a different name. */
     private static final String MODEL_NAME = System.getProperty(
-            "r3.fixtures.boundary-model", "minilm");
+            "fixtures.boundary-model", "minilm");
     private static final String HF_MODEL_URL =
             "djl://ai.djl.huggingface.pytorch/sentence-transformers/all-MiniLM-L6-v2";
     private static final int EXPECTED_DIMS = 384;
@@ -290,7 +290,7 @@ class SemanticGraphPipelineServiceIT {
         long p95 = timingsMs[(int) Math.ceil(timingsMs.length * 0.95) - 1];
         long p99 = timingsMs[timingsMs.length - 1];
 
-        log.info("R3 per-doc latency over {} runs: p50={}ms p95={}ms p99(max)={}ms",
+        log.info("per-doc latency over {} runs: p50={}ms p95={}ms p99(max)={}ms",
                 iterations, p50, p95, p99);
         log.info("DESIGN.md §13 gate: semantic-graph p95 ≤ 500ms — measured p95 = {}ms {}",
                 p95, (p95 <= 500 ? "MET" : "NOT MET"));

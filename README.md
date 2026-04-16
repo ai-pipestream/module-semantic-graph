@@ -33,7 +33,7 @@ Every field accepts both snake_case and camelCase. Defaults match DESIGN.md
 | `compute_document_centroid` | `true` | Emit one `document_centroid` SPR per Stage-2 triple. Always computable — averages all chunk vectors in the SPR. |
 | `compute_semantic_boundaries` | `true` | Run topic-boundary detection on `sentences_internal` vectors and re-embed each group via `boundary_embedding_model_id`. |
 | `boundary_embedding_model_id` | **REQUIRED** when `compute_semantic_boundaries=true` | DJL model id. §21.3: no "first available" fallback — absent / not-loaded → `FAILED_PRECONDITION`. |
-| `max_semantic_chunks_per_doc` | `50` | Hard cap on boundary group count per doc. Exceeding it raises `INTERNAL`; R3 never silently truncates. |
+| `max_semantic_chunks_per_doc` | `50` | Hard cap on boundary group count per doc. Exceeding it raises `INTERNAL`; the pipeline never silently truncates. |
 | `boundary_similarity_threshold` | `0.5` | Cosine similarity below which a sentence break becomes a group boundary. Range `[-1.0, 1.0]`. |
 | `boundary_percentile_threshold` | `20` | Percentile-based boundary trigger (0–100). |
 | `boundary_min_sentences_per_chunk` | `2` | Merges small groups with the higher-similarity neighbor. |
@@ -46,8 +46,8 @@ Every field accepts both snake_case and camelCase. Defaults match DESIGN.md
 ## Sentence-shaped SPR detection
 
 Boundary detection needs a Stage-2 SPR whose `chunk_config_id` is sentence-
-shaped AND whose `embedding_config_id == boundary_embedding_model_id`. R3
-accepts either of the following as sentence-shaped for a given `source_label`:
+shaped AND whose `embedding_config_id == boundary_embedding_model_id`. The
+pipeline accepts either of the following as sentence-shaped for a given `source_label`:
 
 1. `chunk_config_id == "sentences_internal"` — the chunker's always-emit
    sentence pass (DESIGN.md §4.1 alwaysEmitSentences).
@@ -57,7 +57,7 @@ accepts either of the following as sentence-shaped for a given `source_label`:
 When both are present for the same source, `sentences_internal` wins
 (deterministic).
 
-If no sentence-shaped SPR is found for `(source, boundary_model)`, R3 fails
+If no sentence-shaped SPR is found for `(source, boundary_model)`, the pipeline fails
 with `FAILED_PRECONDITION`.
 
 ## Error semantics (gRPC status)
@@ -113,7 +113,7 @@ real MiniLM model. It skips with a clear reason when DJL isn't reachable.
 **Bring up DJL (CPU variant, simplest):**
 
 ```bash
-docker run -d --name r3-djl --rm -p 18090:8080 deepjavalibrary/djl-serving:0.36.0-cpu
+docker run -d --name semgraph-djl --rm -p 18090:8080 deepjavalibrary/djl-serving:0.36.0-cpu
 # wait ~5 seconds for startup
 curl -X POST 'http://localhost:18090/models?url=djl%3A%2F%2Fai.djl.huggingface.pytorch%2Fsentence-transformers%2Fall-MiniLM-L6-v2&model_name=all-MiniLM-L6-v2&engine=PyTorch&batch_size=1&max_batch_delay=0&min_worker=1&max_worker=2&job_queue_size=1000&translatorFactory=ai.djl.huggingface.translator.TextEmbeddingTranslatorFactory&synchronous=true'
 ```
@@ -122,7 +122,7 @@ curl -X POST 'http://localhost:18090/models?url=djl%3A%2F%2Fai.djl.huggingface.p
 `/work/modules/module-embedder/docs/ai-slop/djl-serving-config.md`):**
 
 ```bash
-docker run -d --name r3-djl --rm --gpus all -p 18090:8080 \
+docker run -d --name semgraph-djl --rm --gpus all -p 18090:8080 \
     -e JAVA_OPTS="-Xmx16g -Xms8g" \
     deepjavalibrary/djl-serving:0.36.0-pytorch-gpu
 # same POST as above; add more models by repeating with different model_name / url
@@ -167,13 +167,13 @@ example — the same pattern applies to mpnet and e5-* using `AutoTokenizer` +
 ## Relationship to other modules
 
 - **Upstream:** `module-embedder` produces Stage 2 and passes the doc to
-  this step. R3 asserts `assertPostEmbedder` on entry.
+  this step. The module asserts `assertPostEmbedder` on entry.
 - **Downstream:** `opensearch-sink` (or whatever sink is wired in the
-  graph) consumes the Stage-3 doc. R3's output SPRs carry `granularity`,
+  graph) consumes the Stage-3 doc. the module's output SPRs carry `granularity`,
   `pooling_method`, `parent_result_id`, and `centroid_metadata` so the sink
   can route centroids to pooled fields and boundary SPRs to semantic fields
   without needing to parse `chunk_config_id`.
 - **DJL:** this module depends on a DJL Serving instance reachable at
   `quarkus.rest-client.djl-serving.url`. Per §21.3 the model named by
-  `boundary_embedding_model_id` MUST be loaded before R3 runs; R3 caches
+  `boundary_embedding_model_id` MUST be loaded before the pipeline runs; the module caches
   the `/models` probe for 30 s via `@CacheResult` to amortize the check.

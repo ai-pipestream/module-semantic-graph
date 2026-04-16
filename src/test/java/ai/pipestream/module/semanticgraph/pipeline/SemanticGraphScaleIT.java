@@ -30,19 +30,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Scale ITs for {@link SemanticGraphPipelineService} against streamed
  * {@link PipeDoc} fixtures resolved from the Maven artifact at
  * {@code ai.pipestream.testdata:???:???} (GAV TBD when the fixture jar
- * publishes; for now driven by {@code -Dr3.fixtures.stage2-100=...} and
- * {@code -Dr3.fixtures.stage2-1000=...} system properties).
+ * publishes; for now driven by {@code -Dfixtures.stage2-100=...} and
+ * {@code -Dfixtures.stage2-1000=...} system properties).
  *
  * <h2>Two scenarios</h2>
  *
  * <ol>
  *   <li><b>100-doc end-to-end</b> — fixture includes a sentence-shaped SPR
- *       per source. R3 runs with {@code compute_semantic_boundaries=true}
+ *       per source. the pipeline runs with {@code compute_semantic_boundaries=true}
  *       against the configured boundary model. Asserts every doc passes
  *       {@link SemanticPipelineInvariants#assertPostSemanticGraph} and
  *       Stage-2 SPRs are preserved byte-for-byte.</li>
  *   <li><b>1000-doc centroids-only</b> — fixture has no sentence
- *       embeddings. R3 runs with {@code compute_semantic_boundaries=false};
+ *       embeddings. the pipeline runs with {@code compute_semantic_boundaries=false};
  *       only document / paragraph / section centroids are produced. The
  *       1000-doc set sits at ~2 GB on disk so we stream one
  *       {@link PipeDoc} at a time and never materialise the full list.</li>
@@ -75,25 +75,25 @@ class SemanticGraphScaleIT {
      * Fixture for the 100-doc end-to-end test — token-chunked + sentences_internal,
      * 4 SPRs/doc (token × {minilm, paraphrase-minilm} + sentences_internal × the
      * same two models). The sentences_internal SPR with embedding_config_id =
-     * BOUNDARY_MODEL is what R3's boundary detection consumes.
+     * BOUNDARY_MODEL is what the boundary detection consumes.
      *
-     * <p>Override via {@code -Dr3.fixtures.stage2-100=...} to point at one of
+     * <p>Override via {@code -Dfixtures.stage2-100=...} to point at one of
      * the other variants in the artifact:
      * {@code stage2_sentence_full_100} or {@code stage2_paragraph_full_100}.
      */
     private static final String FIXTURE_100 = System.getProperty(
-            "r3.fixtures.stage2-100",
+            "fixtures.stage2-100",
             "fixtures/court/stage2_token_full_100");
 
     /**
      * Fixture for the 1000-doc centroids-only test — token-chunked, 2 SPRs/doc
      * (one chunker × 2 embedders), NO sentences_internal so boundaries can't
-     * run. R3 must skip the boundary pass cleanly when given this input.
+     * run. the pipeline must skip the boundary pass cleanly when given this input.
      *
-     * <p>Override via {@code -Dr3.fixtures.stage2-1000=...} to swap variant.
+     * <p>Override via {@code -Dfixtures.stage2-1000=...} to swap variant.
      */
     private static final String FIXTURE_1000 = System.getProperty(
-            "r3.fixtures.stage2-1000",
+            "fixtures.stage2-1000",
             "fixtures/court/stage2_token_1000");
 
     /**
@@ -103,7 +103,7 @@ class SemanticGraphScaleIT {
      * which corresponds to {@code all-MiniLM-L6-v2} on DJL Serving.
      */
     private static final String BOUNDARY_MODEL = System.getProperty(
-            "r3.fixtures.boundary-model", "minilm");
+            "fixtures.boundary-model", "minilm");
 
     private static final Duration PER_DOC_TIMEOUT = Duration.ofSeconds(60);
 
@@ -119,7 +119,7 @@ class SemanticGraphScaleIT {
     void scale100_fullPipeline() {
         Assumptions.assumeTrue(directoryExists(FIXTURE_100),
                 "Fixture directory not on classpath: " + FIXTURE_100
-                        + " — set -Dr3.fixtures.stage2-100=<resource> or add the fixture jar to "
+                        + " — set -Dfixtures.stage2-100=<resource> or add the fixture jar to "
                         + "testRuntimeClasspath. Skipping rather than silently passing.");
         Assumptions.assumeTrue(djlReachableWithModel(BOUNDARY_MODEL),
                 "DJL at " + djlUrl() + " is unreachable or doesn't have model '"
@@ -168,7 +168,7 @@ class SemanticGraphScaleIT {
     void scale1000_centroidsOnly() {
         Assumptions.assumeTrue(directoryExists(FIXTURE_1000),
                 "Fixture directory not on classpath: " + FIXTURE_1000
-                        + " — set -Dr3.fixtures.stage2-1000=<resource> or add the fixture jar to "
+                        + " — set -Dfixtures.stage2-1000=<resource> or add the fixture jar to "
                         + "testRuntimeClasspath. Skipping.");
 
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
@@ -211,14 +211,14 @@ class SemanticGraphScaleIT {
                     out = service.process(input, opts, "scale-it").await().atMost(PER_DOC_TIMEOUT);
                 } catch (Throwable t) {
                     s.processFailures++;
-                    log.warn("R3 failed on doc#{} (id={}): {}", s.docCount,
+                    log.warn("Pipeline failed on doc#{} (id={}): {}", s.docCount,
                             input.getDocId(), t.getMessage());
                     return;
                 }
                 timings.add(System.nanoTime() - t0);
 
                 // Pass the runtime-configured cap so the test's invariant
-                // check matches what R3 actually generated (R3's own
+                // check matches what the pipeline actually generated (the module's own
                 // self-check inside process() also passes this cap).
                 String invariantErr = SemanticPipelineInvariants.assertPostSemanticGraph(
                         out, opts.effectiveMaxSemanticChunksPerDoc());
@@ -264,7 +264,7 @@ class SemanticGraphScaleIT {
     }
 
     private static void report(String label, Stats s) {
-        log.info("R3 SCALE {} — docs={} failures={} invariant_violations={} "
+        log.info("SCALE {} — docs={} failures={} invariant_violations={} "
                         + "preservation_violations={} docs_with_centroid={} docs_with_boundary={} "
                         + "p50={}ms p95={}ms p99={}ms max={}ms",
                 label, s.docCount, s.processFailures, s.invariantViolations,
