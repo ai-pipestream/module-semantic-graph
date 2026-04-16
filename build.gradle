@@ -89,6 +89,13 @@ dependencies {
     testImplementation libs.testcontainers.core
     testImplementation libs.testcontainers.junit
 
+    // Stage-2 fixture artifact for SemanticGraphScaleIT — published from
+    // https://github.com/ai-pipestream/embedder-pipedocs-court via
+    // `./gradlew publishToMavenLocal` until CI/CD wires up Sonatype.
+    // Resolves through ~/.m2; classpath layout under
+    // /fixtures/court/stage2_{variant}_{1000|full_100}/doc_NNNN.pb.gz.
+    testImplementation 'ai.pipestream:embedder-pipedocs-court:0.1.0-SNAPSHOT'
+
     runtimeOnly libs.quarkus.logging.manager
 }
 

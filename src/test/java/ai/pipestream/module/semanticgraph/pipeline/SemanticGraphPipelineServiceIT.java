@@ -19,7 +19,6 @@ import ai.pipestream.module.semanticgraph.invariants.SemanticPipelineInvariants;
 import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import io.smallrye.mutiny.Uni;
 import io.vertx.core.json.JsonArray;
@@ -84,31 +83,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * </ul>
  */
 @QuarkusTest
-@TestProfile(SemanticGraphPipelineServiceIT.ItProfile.class)
+@TestProfile(DjlExternalProfile.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("SemanticGraphPipelineService IT (real DJL + MiniLM)")
 class SemanticGraphPipelineServiceIT {
 
-    /**
-     * Points the Quarkus {@code @RestClient DjlServingClient} at the external
-     * DJL instance named by {@code -Ddjl.host}/{@code -Ddjl.port}. This profile
-     * overrides {@code quarkus.rest-client.djl-serving.url} at startup so the
-     * injected client honours the test's target.
-     */
-    public static class ItProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            String host = System.getProperty("djl.host", "localhost");
-            String port = System.getProperty("djl.port", "18090");
-            return Map.of(
-                    "quarkus.rest-client.djl-serving.url", "http://" + host + ":" + port);
-        }
-    }
-
     private static final Logger log = LoggerFactory.getLogger(SemanticGraphPipelineServiceIT.class);
 
     private static final String DJL_SERVING_VERSION = "0.36.0";
-    private static final String MODEL_NAME = "all-MiniLM-L6-v2";
+    /** DJL model name. Defaults to {@code minilm} to match the
+     *  embedder-pipedocs-court fixture's {@code embedding_config_id} naming
+     *  convention. Override with {@code -Dr3.fixtures.boundary-model=...}
+     *  if your DJL has it registered under a different name. */
+    private static final String MODEL_NAME = System.getProperty(
+            "r3.fixtures.boundary-model", "minilm");
     private static final String HF_MODEL_URL =
             "djl://ai.djl.huggingface.pytorch/sentence-transformers/all-MiniLM-L6-v2";
     private static final int EXPECTED_DIMS = 384;

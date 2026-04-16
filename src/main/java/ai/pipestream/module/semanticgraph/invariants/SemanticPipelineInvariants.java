@@ -235,6 +235,22 @@ public final class SemanticPipelineInvariants {
      * @return {@code null} if valid; otherwise a one-line error message
      */
     public static String assertPostSemanticGraph(PipeDoc doc) {
+        return assertPostSemanticGraph(doc, MAX_SEMANTIC_CHUNKS_PER_DOC_DEFAULT);
+    }
+
+    /**
+     * Variant of {@link #assertPostSemanticGraph(PipeDoc)} that takes the
+     * runtime-configured boundary chunk cap. R3's own self-check passes the
+     * effective {@code max_semantic_chunks_per_doc} from
+     * {@link ai.pipestream.module.semanticgraph.config.SemanticGraphStepOptions}
+     * so a deployment that legitimately raises the cap (for long-document
+     * corpora like court opinions) doesn't get its own valid output rejected
+     * by an invariant frozen to the default.
+     *
+     * <p>External callers without R3's options context should use the no-arg
+     * overload, which checks against {@link #MAX_SEMANTIC_CHUNKS_PER_DOC_DEFAULT}.
+     */
+    public static String assertPostSemanticGraph(PipeDoc doc, int boundaryChunkCap) {
         if (doc == null) {
             return "post-graph: PipeDoc is null";
         }
@@ -368,10 +384,10 @@ public final class SemanticPipelineInvariants {
                 if (spr.getSemanticConfigId().isEmpty()) {
                     return "post-graph: " + sprCtx + " (boundary) semantic_config_id is empty";
                 }
-                if (spr.getChunksCount() > MAX_SEMANTIC_CHUNKS_PER_DOC_DEFAULT) {
+                if (spr.getChunksCount() > boundaryChunkCap) {
                     return "post-graph: " + sprCtx + " (boundary) chunk count "
-                            + spr.getChunksCount() + " exceeds default hard cap "
-                            + MAX_SEMANTIC_CHUNKS_PER_DOC_DEFAULT;
+                            + spr.getChunksCount() + " exceeds boundary chunk cap "
+                            + boundaryChunkCap;
                 }
             } else {
                 // Stage-1-shaped SPR (preserved from Stage 2) — contributes to

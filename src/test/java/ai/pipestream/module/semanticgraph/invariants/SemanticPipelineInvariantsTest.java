@@ -290,7 +290,7 @@ class SemanticPipelineInvariantsTest {
                 SemanticPipelineInvariants.MAX_SEMANTIC_CHUNKS_PER_DOC_DEFAULT + 1);
         PipeDoc doc = wrap(boundary, advertisedEmbedder("minilm"));
         assertThat(SemanticPipelineInvariants.assertPostSemanticGraph(doc))
-                .contains("exceeds default hard cap");
+                .contains("exceeds boundary chunk cap");
     }
 
     // ======================================================================

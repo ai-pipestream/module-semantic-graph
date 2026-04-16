@@ -5,7 +5,6 @@ import ai.pipestream.data.v1.SemanticProcessingResult;
 import ai.pipestream.module.semanticgraph.config.SemanticGraphStepOptions;
 import ai.pipestream.module.semanticgraph.invariants.SemanticPipelineInvariants;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.Assumptions;
@@ -23,7 +22,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,41 +64,48 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is the only doc-count-proportional state in the test JVM.
  */
 @QuarkusTest
-@TestProfile(SemanticGraphScaleIT.ItProfile.class)
+@TestProfile(DjlExternalProfile.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("SemanticGraph scale ITs (100 + 1000 doc streaming)")
 class SemanticGraphScaleIT {
 
     private static final Logger log = LoggerFactory.getLogger(SemanticGraphScaleIT.class);
 
-    /** Fixture for the 100-doc end-to-end test. Sentence embeddings present. */
+    /**
+     * Fixture for the 100-doc end-to-end test — token-chunked + sentences_internal,
+     * 4 SPRs/doc (token × {minilm, paraphrase-minilm} + sentences_internal × the
+     * same two models). The sentences_internal SPR with embedding_config_id =
+     * BOUNDARY_MODEL is what R3's boundary detection consumes.
+     *
+     * <p>Override via {@code -Dr3.fixtures.stage2-100=...} to point at one of
+     * the other variants in the artifact:
+     * {@code stage2_sentence_full_100} or {@code stage2_paragraph_full_100}.
+     */
     private static final String FIXTURE_100 = System.getProperty(
             "r3.fixtures.stage2-100",
-            "fixtures/court-stage2-100.pb.gz");
+            "fixtures/court/stage2_token_full_100");
 
-    /** Fixture for the 1000-doc centroids-only test. No sentence embeddings. */
+    /**
+     * Fixture for the 1000-doc centroids-only test — token-chunked, 2 SPRs/doc
+     * (one chunker × 2 embedders), NO sentences_internal so boundaries can't
+     * run. R3 must skip the boundary pass cleanly when given this input.
+     *
+     * <p>Override via {@code -Dr3.fixtures.stage2-1000=...} to swap variant.
+     */
     private static final String FIXTURE_1000 = System.getProperty(
             "r3.fixtures.stage2-1000",
-            "fixtures/court-stage2-1000.pb.gz");
+            "fixtures/court/stage2_token_1000");
 
-    /** Boundary embedding model id used by the 100-doc test. Must match
-     *  whichever sentence-shaped SPR's embedding_config_id is in the fixture. */
+    /**
+     * Boundary embedding model id used by the 100-doc test. The fixture
+     * artifact embeds with two models per the embedder-pipedocs-court README:
+     * {@code minilm} and {@code paraphrase-minilm}. Default targets {@code minilm}
+     * which corresponds to {@code all-MiniLM-L6-v2} on DJL Serving.
+     */
     private static final String BOUNDARY_MODEL = System.getProperty(
-            "r3.fixtures.boundary-model", "all-MiniLM-L6-v2");
+            "r3.fixtures.boundary-model", "minilm");
 
     private static final Duration PER_DOC_TIMEOUT = Duration.ofSeconds(60);
-
-    /** Mirror of SemanticGraphPipelineServiceIT.ItProfile. Points the
-     *  injected @RestClient DjlServingClient at the standard test DJL. */
-    public static class ItProfile implements QuarkusTestProfile {
-        @Override
-        public Map<String, String> getConfigOverrides() {
-            String host = System.getProperty("djl.host", "localhost");
-            String port = System.getProperty("djl.port", "18090");
-            return Map.of(
-                    "quarkus.rest-client.djl-serving.url", "http://" + host + ":" + port);
-        }
-    }
 
     @Inject
     SemanticGraphPipelineService service;
@@ -112,18 +117,33 @@ class SemanticGraphScaleIT {
     @Test
     @DisplayName("100 docs: full pipeline (centroids + boundaries) — every doc passes assertPostSemanticGraph")
     void scale100_fullPipeline() {
-        Assumptions.assumeTrue(resourceExists(FIXTURE_100),
-                "Fixture not on classpath: " + FIXTURE_100
+        Assumptions.assumeTrue(directoryExists(FIXTURE_100),
+                "Fixture directory not on classpath: " + FIXTURE_100
                         + " — set -Dr3.fixtures.stage2-100=<resource> or add the fixture jar to "
                         + "testRuntimeClasspath. Skipping rather than silently passing.");
         Assumptions.assumeTrue(djlReachableWithModel(BOUNDARY_MODEL),
                 "DJL at " + djlUrl() + " is unreachable or doesn't have model '"
                         + BOUNDARY_MODEL + "' loaded. Boundaries can't run; skipping.");
 
+        // Tuned for the court fixture: real court opinions are LONG. With
+        // default thresholds (similarity=0.5, percentile=20%, min=2, max=30)
+        // most docs produce 20-150 boundary groups; the worst outlier hits
+        // 618 groups. Two knobs make the IT process every doc:
+        //   - max_semantic_chunks_per_doc=1000 — covers the 618-group worst
+        //     case with headroom; the hard-cap fail-fast behavior is still
+        //     exercised by SemanticGraphPipelineServiceTest unit tests.
+        //   - boundary_min_sentences_per_chunk=5 — merges small 2-3 sentence
+        //     groups upward, compressing the median group count. Helps
+        //     downstream consumers too: a 5-sentence span reads as a
+        //     coherent topic, a 2-sentence span often doesn't.
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 /*paragraph*/ true, /*section*/ true, /*document*/ true,
                 /*boundaries*/ true, BOUNDARY_MODEL,
-                null, null, null, null, null, null, null, null, null);
+                /*maxSemanticChunksPerDoc*/ 1000,
+                /*similarity*/ null, /*percentile*/ null,
+                /*minSentences*/ 5, /*maxSentences*/ null,
+                /*batchSize*/ null, /*subBatchCap*/ null,
+                /*maxRetry*/ null, /*backoff*/ null);
 
         Stats stats = streamAndProcess(FIXTURE_100, opts, /*expectBoundaries*/ true);
         report("scale100_fullPipeline", stats);
@@ -146,8 +166,8 @@ class SemanticGraphScaleIT {
     @Test
     @DisplayName("1000 docs: centroids only (no boundaries) — every doc passes assertPostSemanticGraph")
     void scale1000_centroidsOnly() {
-        Assumptions.assumeTrue(resourceExists(FIXTURE_1000),
-                "Fixture not on classpath: " + FIXTURE_1000
+        Assumptions.assumeTrue(directoryExists(FIXTURE_1000),
+                "Fixture directory not on classpath: " + FIXTURE_1000
                         + " — set -Dr3.fixtures.stage2-1000=<resource> or add the fixture jar to "
                         + "testRuntimeClasspath. Skipping.");
 
@@ -182,7 +202,7 @@ class SemanticGraphScaleIT {
         Stats s = new Stats();
         List<Long> timings = new ArrayList<>();
 
-        try (Stream<PipeDoc> docs = Stage2FixtureStream.stream(fixtureResource)) {
+        try (Stream<PipeDoc> docs = Stage2FixtureStream.streamDir(fixtureResource)) {
             docs.forEach(input -> {
                 s.docCount++;
                 long t0 = System.nanoTime();
@@ -197,7 +217,11 @@ class SemanticGraphScaleIT {
                 }
                 timings.add(System.nanoTime() - t0);
 
-                String invariantErr = SemanticPipelineInvariants.assertPostSemanticGraph(out);
+                // Pass the runtime-configured cap so the test's invariant
+                // check matches what R3 actually generated (R3's own
+                // self-check inside process() also passes this cap).
+                String invariantErr = SemanticPipelineInvariants.assertPostSemanticGraph(
+                        out, opts.effectiveMaxSemanticChunksPerDoc());
                 if (invariantErr != null) {
                     s.invariantViolations++;
                     log.warn("Invariant violation on doc#{} (id={}): {}",
@@ -262,8 +286,13 @@ class SemanticGraphScaleIT {
     // Probe helpers (mirror SemanticGraphPipelineServiceIT)
     // ======================================================================
 
-    private static boolean resourceExists(String resourcePath) {
-        return Thread.currentThread().getContextClassLoader().getResource(resourcePath) != null;
+    /** Directory check via a probe for {@code doc_0001.pb.gz} — the fixture's
+     *  stable first-doc convention. */
+    private static boolean directoryExists(String dirResourcePath) {
+        String probe = dirResourcePath.endsWith("/")
+                ? dirResourcePath + "doc_0001.pb.gz"
+                : dirResourcePath + "/doc_0001.pb.gz";
+        return Thread.currentThread().getContextClassLoader().getResource(probe) != null;
     }
 
     private static String djlUrl() {

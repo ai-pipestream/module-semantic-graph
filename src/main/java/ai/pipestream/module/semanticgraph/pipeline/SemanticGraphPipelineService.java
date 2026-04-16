@@ -725,8 +725,12 @@ public class SemanticGraphPipelineService {
                 .setSearchMetadata(smBuilder.build())
                 .build();
 
-        // Defensive self-check before emit.
-        String err = SemanticPipelineInvariants.assertPostSemanticGraph(outputDoc);
+        // Defensive self-check before emit. Pass the runtime-configured
+        // boundary cap so a deployment that legitimately raised
+        // max_semantic_chunks_per_doc isn't rejected by an invariant
+        // hard-coded to the default.
+        String err = SemanticPipelineInvariants.assertPostSemanticGraph(
+                outputDoc, prepared.options.effectiveMaxSemanticChunksPerDoc());
         if (err != null) {
             throw new IllegalStateException("R3 produced invalid Stage-3 output: " + err);
         }
