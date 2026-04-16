@@ -146,9 +146,9 @@ publishing {
                 artifact.builtBy tasks.named('quarkusBuild')
             }
             pom { pom ->
-                name.set('Semantic Manager Module')
-                description.set('Semantic indexing coordinator module for the Pipestream platform')
-                url.set('https://github.com/ai-pipestream/module-semantic-manager')
+                name.set('Semantic Graph Module')
+                description.set('Stage 3 of the semantic pipeline: centroids and semantic-boundary detection over fully-embedded chunks')
+                url.set('https://github.com/ai-pipestream/module-semantic-graph')
 
                 licenses {
                     license {
@@ -165,9 +165,9 @@ publishing {
                 }
 
                 scm {
-                    connection.set('scm:git:git://github.com/ai-pipestream/module-semantic-manager.git')
-                    developerConnection.set('scm:git:ssh://github.com/ai-pipestream/module-semantic-manager.git')
-                    url.set('https://github.com/ai-pipestream/module-semantic-manager')
+                    connection.set('scm:git:git://github.com/ai-pipestream/module-semantic-graph.git')
+                    developerConnection.set('scm:git:ssh://github.com/ai-pipestream/module-semantic-graph.git')
+                    url.set('https://github.com/ai-pipestream/module-semantic-graph')
                 }
             }
         }
@@ -179,7 +179,7 @@ publishing {
         if (System.getenv("GITHUB_ACTOR") != null) {
             maven {
                 name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/ai-pipestream/module-semantic-manager")
+                url = uri("https://maven.pkg.github.com/ai-pipestream/module-semantic-graph")
                 credentials {
                     username = System.getenv("GITHUB_ACTOR")
                     password = System.getenv("GITHUB_TOKEN")

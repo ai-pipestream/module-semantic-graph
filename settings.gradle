@@ -5,7 +5,7 @@ pluginManagement {
     }
 }
 
-rootProject.name = 'module-semantic-manager'
+rootProject.name = 'module-semantic-graph'
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
