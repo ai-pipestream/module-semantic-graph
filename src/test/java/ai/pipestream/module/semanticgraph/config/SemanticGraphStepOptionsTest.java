@@ -155,7 +155,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_boundariesOnWithModelId_ok() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 true, true, true, true, "minilm",
-                null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
 
         assertThat(opts.requireBoundaryEmbeddingModelId())
                 .as("requireBoundaryEmbeddingModelId returns the configured value")
@@ -167,7 +167,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_boundariesOff_modelIdNotRequired() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 true, true, true, false, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
 
         opts.validateForUse(); // does not throw — boundaries off, model id irrelevant
     }
@@ -178,7 +178,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_boundariesOn_modelIdMissing_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 true, true, true, true, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("§21.3 forbids running boundaries without an explicit model id")
@@ -190,7 +190,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_boundariesOn_modelIdBlank_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 true, true, true, true, "   ",
-                null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("Blank model id is not a model id")
@@ -212,7 +212,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_maxSemanticChunksPerDocZero_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, false, null,
-                0, null, null, null, null);
+                0, null, null, null, null, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("Explicit zero is not a valid hard cap")
@@ -224,7 +224,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_minSentencesGreaterThanMax_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, false, null,
-                null, null, null, 30, 5);
+                null, null, null, 30, 5, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("min > max is a contradiction the parser must catch")
@@ -236,7 +236,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_percentileOutOfRange_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, false, null,
-                null, null, 150, null, null);
+                null, null, 150, null, null, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("Percentile must be in [0, 100]")
@@ -248,7 +248,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_similarityThresholdOutOfRange_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, false, null,
-                null, 1.5f, null, null, null);
+                null, 1.5f, null, null, null, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("Cosine similarity must be in [-1.0, 1.0]")
@@ -260,7 +260,7 @@ class SemanticGraphStepOptionsTest {
     void validateForUse_boundaryMinSentencesNegative_throws() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 false, false, false, false, null,
-                null, null, null, -1, null);
+                null, null, null, -1, null, null, null, null, null);
 
         assertThatExceptionOfType(SemanticGraphStepOptions.InvalidOptionsException.class)
                 .as("Negative min-sentences is invalid")
@@ -279,7 +279,7 @@ class SemanticGraphStepOptionsTest {
 
         SemanticGraphStepOptions set = new SemanticGraphStepOptions(
                 null, null, null, null, "minilm",
-                null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
         assertThat(set.requireBoundaryEmbeddingModelId())
                 .as("Set value flows through verbatim")
                 .isEqualTo("minilm");
@@ -291,7 +291,7 @@ class SemanticGraphStepOptionsTest {
     void effectiveMaxSemanticChunksPerDoc_negativeFallsBackToDefault() {
         SemanticGraphStepOptions opts = new SemanticGraphStepOptions(
                 null, null, null, null, null,
-                -10, null, null, null, null);
+                -10, null, null, null, null, null, null, null, null);
 
         assertThat(opts.effectiveMaxSemanticChunksPerDoc())
                 .as("Negative value is not a meaningful cap; effective accessor falls back to the spec default")

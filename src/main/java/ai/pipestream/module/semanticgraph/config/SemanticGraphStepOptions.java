@@ -76,7 +76,19 @@ public record SemanticGraphStepOptions(
         Integer boundaryMinSentencesPerChunk,
 
         @JsonProperty("boundary_max_sentences_per_chunk") @JsonAlias("boundaryMaxSentencesPerChunk")
-        Integer boundaryMaxSentencesPerChunk
+        Integer boundaryMaxSentencesPerChunk,
+
+        @JsonProperty("max_batch_size") @JsonAlias("maxBatchSize")
+        Integer maxBatchSize,
+
+        @JsonProperty("max_subbatches_per_doc") @JsonAlias({"maxSubbatchesPerDoc", "maxSubBatchesPerDoc", "max_sub_batches_per_doc"})
+        Integer maxSubBatchesPerDoc,
+
+        @JsonProperty("max_retry_attempts") @JsonAlias("maxRetryAttempts")
+        Integer maxRetryAttempts,
+
+        @JsonProperty("retry_backoff_ms") @JsonAlias("retryBackoffMs")
+        Long retryBackoffMs
 ) {
 
     /** Default cap on semantic-boundary SPR chunks per doc (DESIGN.md §6.3). */
@@ -93,6 +105,18 @@ public record SemanticGraphStepOptions(
 
     /** Default maximum sentences merged into one semantic chunk. */
     public static final int DEFAULT_BOUNDARY_MAX_SENTENCES_PER_CHUNK = 30;
+
+    /** Default DJL batch size for the boundary re-embed path. Mirrors embedder's default. */
+    public static final int DEFAULT_MAX_BATCH_SIZE = 32;
+
+    /** Default per-doc concurrency cap on DJL sub-batches for boundary re-embed. */
+    public static final int DEFAULT_MAX_SUB_BATCHES_PER_DOC = 5;
+
+    /** Default retry attempts after first failure for DJL boundary re-embed. */
+    public static final int DEFAULT_MAX_RETRY_ATTEMPTS = 2;
+
+    /** Default base backoff (ms) for exponential retry on DJL boundary re-embed. */
+    public static final long DEFAULT_RETRY_BACKOFF_MS = 100L;
 
     public boolean effectiveComputeParagraphCentroids() {
         return computeParagraphCentroids == null || computeParagraphCentroids;
@@ -165,6 +189,26 @@ public record SemanticGraphStepOptions(
                 : DEFAULT_BOUNDARY_MAX_SENTENCES_PER_CHUNK;
     }
 
+    public int effectiveMaxBatchSize() {
+        return maxBatchSize != null && maxBatchSize > 0
+                ? maxBatchSize : DEFAULT_MAX_BATCH_SIZE;
+    }
+
+    public int effectiveMaxSubBatchesPerDoc() {
+        return maxSubBatchesPerDoc != null && maxSubBatchesPerDoc > 0
+                ? maxSubBatchesPerDoc : DEFAULT_MAX_SUB_BATCHES_PER_DOC;
+    }
+
+    public int effectiveMaxRetryAttempts() {
+        return maxRetryAttempts != null && maxRetryAttempts >= 0
+                ? maxRetryAttempts : DEFAULT_MAX_RETRY_ATTEMPTS;
+    }
+
+    public long effectiveRetryBackoffMs() {
+        return retryBackoffMs != null && retryBackoffMs >= 0
+                ? retryBackoffMs : DEFAULT_RETRY_BACKOFF_MS;
+    }
+
     /**
      * Asserts cross-field invariants per DESIGN.md §6.3 / §21.3. Callers
      * should invoke this once, immediately after parsing, and map any thrown
@@ -223,6 +267,22 @@ public record SemanticGraphStepOptions(
                     "boundary_similarity_threshold must be in [-1.0, 1.0] when explicitly set; got "
                             + boundarySimilarityThreshold);
         }
+        if (maxBatchSize != null && maxBatchSize <= 0) {
+            throw new InvalidOptionsException(
+                    "max_batch_size must be > 0 when explicitly set; got " + maxBatchSize);
+        }
+        if (maxSubBatchesPerDoc != null && maxSubBatchesPerDoc <= 0) {
+            throw new InvalidOptionsException(
+                    "max_subbatches_per_doc must be > 0 when explicitly set; got " + maxSubBatchesPerDoc);
+        }
+        if (maxRetryAttempts != null && maxRetryAttempts < 0) {
+            throw new InvalidOptionsException(
+                    "max_retry_attempts must be >= 0 when explicitly set; got " + maxRetryAttempts);
+        }
+        if (retryBackoffMs != null && retryBackoffMs < 0) {
+            throw new InvalidOptionsException(
+                    "retry_backoff_ms must be >= 0 when explicitly set; got " + retryBackoffMs);
+        }
     }
 
     /**
@@ -235,7 +295,8 @@ public record SemanticGraphStepOptions(
      * {@link #validateForUse()}.
      */
     public static SemanticGraphStepOptions defaults() {
-        return new SemanticGraphStepOptions(null, null, null, null, null, null, null, null, null, null);
+        return new SemanticGraphStepOptions(null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null);
     }
 
     /**
