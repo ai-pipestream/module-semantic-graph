@@ -85,6 +85,8 @@ dependencies {
     testImplementation 'io.rest-assured:rest-assured'
     testImplementation 'ai.pipestream:pipestream-test-support'
     testImplementation libs.assertj.core
+    testImplementation libs.testcontainers.core
+    testImplementation libs.testcontainers.junit
 
     runtimeOnly libs.quarkus.logging.manager
 }
@@ -103,6 +105,11 @@ test {
     systemProperty "java.util.logging.manager", "org.jboss.logmanager.LogManager"
     maxHeapSize = "4g"
     jvmArgs = ["-Xmx4g", "-XX:MaxMetaspaceSize=512m", "--add-opens", "java.base/java.lang=ALL-UNNAMED", "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED"]
+    // Forward DJL integration-test overrides to the forked JVM so
+    // `-Ddjl.host=... -Ddjl.port=...` on the Gradle command line reaches
+    // SemanticGraphPipelineServiceIT. Gradle doesn't propagate sysprops
+    // to forked JVMs unless configured here.
+    systemProperties.putAll(System.getProperties().findAll { it.key.toString().startsWith("djl.") })
 }
 
 // Exclude stress tests from default integration test runs.
