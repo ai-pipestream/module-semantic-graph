@@ -303,6 +303,13 @@ public final class SemanticPipelineInvariants {
                 return "post-graph: " + sprCtx + " (source='" + srcField
                         + "') has zero chunks";
             }
+            // Centroid chunks MAY carry empty text_content per DESIGN.md §4.3
+            // ("text_content: '' OR a representative excerpt"). For Stage-1-shaped
+            // SPRs preserved from Stage 2, text_content MUST be non-empty because
+            // §5.2 required it. Apply the relaxation only to centroid-shaped
+            // chunks; offsets are also optional for centroids (they describe the
+            // source chunks, not a new span).
+            boolean isCentroidSpr = chunkConfigId.endsWith(CENTROID_SUFFIX);
             for (int j = 0; j < chunks.size(); j++) {
                 SemanticChunk chunk = chunks.get(j);
                 String chunkCtx = sprCtx + " chunk[" + j + "]";
@@ -313,7 +320,7 @@ public final class SemanticPipelineInvariants {
                     return "post-graph: " + chunkCtx + " has no embedding_info";
                 }
                 ChunkEmbedding emb = chunk.getEmbeddingInfo();
-                if (emb.getTextContent().isEmpty()) {
+                if (!isCentroidSpr && emb.getTextContent().isEmpty()) {
                     return "post-graph: " + chunkCtx + " text_content is empty";
                 }
                 if (emb.getVectorCount() == 0) {

@@ -92,8 +92,12 @@ public class SemanticGraphPipelineService {
     /** Chunker config {@code algorithm} value marking a sentence chunker. */
     private static final String ALGORITHM_SENTENCE = "SENTENCE";
 
+    private final SemanticGraphEmbedHelper embedHelper;
+
     @Inject
-    SemanticGraphEmbedHelper embedHelper;
+    public SemanticGraphPipelineService(SemanticGraphEmbedHelper embedHelper) {
+        this.embedHelper = embedHelper;
+    }
 
     /**
      * Runs the §7.3 recipe for one {@link PipeDoc}.
