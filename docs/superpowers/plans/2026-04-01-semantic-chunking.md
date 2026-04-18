@@ -213,10 +213,12 @@ git add -A && git commit -m "build: bump protos for semantic chunking support"
 - [ ] **Step 1: Write the test class**
 
 ```java
-package ai.pipestream.module.semanticmanager.service;
+package ai.pipestream.module.semanticgraph.service;
 
 import org.junit.jupiter.api.Test;
+
 import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SemanticBoundaryDetectorTest {
@@ -365,7 +367,7 @@ Expected: FAIL — class not found.
 - [ ] **Step 3: Implement SemanticBoundaryDetector**
 
 ```java
-package ai.pipestream.module.semanticmanager.service;
+package ai.pipestream.module.semanticgraph.service;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -379,7 +381,8 @@ import java.util.List;
  */
 public final class SemanticBoundaryDetector {
 
-    private SemanticBoundaryDetector() {}
+    private SemanticBoundaryDetector() {
+    }
 
     /**
      * Cosine similarity between two vectors.
@@ -615,10 +618,12 @@ git add -A && git commit -m "feat: add SemanticBoundaryDetector with cosine simi
 - [ ] **Step 1: Write the test class**
 
 ```java
-package ai.pipestream.module.semanticmanager.service;
+package ai.pipestream.module.semanticgraph.service;
 
 import org.junit.jupiter.api.Test;
+
 import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class CentroidComputerTest {
@@ -688,7 +693,7 @@ cd /work/modules/module-semantic-manager && ./gradlew test --tests "*CentroidCom
 - [ ] **Step 3: Implement CentroidComputer**
 
 ```java
-package ai.pipestream.module.semanticmanager.service;
+package ai.pipestream.module.semanticgraph.service;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -702,7 +707,8 @@ import java.util.List;
  */
 public final class CentroidComputer {
 
-    private CentroidComputer() {}
+    private CentroidComputer() {
+    }
 
     /**
      * Result of a centroid computation.
@@ -713,7 +719,8 @@ public final class CentroidComputer {
             int sourceVectorCount,
             String sectionTitle,
             Integer sectionDepth
-    ) {}
+    ) {
+    }
 
     /**
      * Averages vectors and L2-normalizes the result.
