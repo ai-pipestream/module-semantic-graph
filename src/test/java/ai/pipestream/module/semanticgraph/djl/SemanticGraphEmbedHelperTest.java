@@ -55,7 +55,7 @@ class SemanticGraphEmbedHelperTest {
         DjlServingClient djl = mock(DjlServingClient.class);
         JsonArray response = arr(arr(0.1, 0.2), arr(0.3, 0.4));
         when(djl.predict(eq("minilm"), any(JsonObject.class)))
-                .thenReturn(Uni.createFrom().item(response));
+                .thenReturn(response);
 
         List<float[]> result = new SemanticGraphEmbedHelper(djl)
                 .embed("minilm", List.of("a", "b"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
@@ -81,7 +81,7 @@ class SemanticGraphEmbedHelperTest {
                 float marker = Float.parseFloat(inputs.getString(i));  // encode the global index into the text
                 out.add(new JsonArray().add(marker));
             }
-            return Uni.createFrom().item(out);
+            return out;
         });
 
         List<String> texts = new ArrayList<>();
@@ -103,7 +103,7 @@ class SemanticGraphEmbedHelperTest {
     @Test
     void embed_capClampsToBatchCount_smallInputOneBatch() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(arr(arr(0.1, 0.2))));
+        when(djl.predict(any(), any())).thenReturn(arr(arr(0.1, 0.2)));
 
         List<float[]> result = new SemanticGraphEmbedHelper(djl)
                 .embed("minilm", List.of("solo"), BATCH, /*perDocCap*/ 60, MAX_RETRIES, BACKOFF_MS)
@@ -183,7 +183,7 @@ class SemanticGraphEmbedHelperTest {
         DjlServingClient djl = mock(DjlServingClient.class);
         // Return 2 vectors for a 4-input batch — alignment violation
         when(djl.predict(any(), any()))
-                .thenReturn(Uni.createFrom().item(arr(arr(0.1), arr(0.2))));
+                .thenReturn(arr(arr(0.1), arr(0.2)));
 
         Throwable err = new SemanticGraphEmbedHelper(djl)
                 .embed("minilm", List.of("a", "b", "c", "d"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
@@ -202,7 +202,7 @@ class SemanticGraphEmbedHelperTest {
     void embed_nullRowInResponse_failsLoud() {
         DjlServingClient djl = mock(DjlServingClient.class);
         JsonArray resp = new JsonArray().add(new JsonArray().add(0.1)).add((Object) null);
-        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(resp));
+        when(djl.predict(any(), any())).thenReturn(resp);
 
         Throwable err = new SemanticGraphEmbedHelper(djl)
                 .embed("minilm", List.of("a", "b"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
@@ -219,7 +219,7 @@ class SemanticGraphEmbedHelperTest {
     void embed_emptyVectorInResponse_failsLoud() {
         DjlServingClient djl = mock(DjlServingClient.class);
         JsonArray resp = arr(arr(0.1, 0.2), new JsonArray());  // second vector is length-0
-        when(djl.predict(any(), any())).thenReturn(Uni.createFrom().item(resp));
+        when(djl.predict(any(), any())).thenReturn(resp);
 
         Throwable err = new SemanticGraphEmbedHelper(djl)
                 .embed("minilm", List.of("a", "b"), BATCH, CAP, MAX_RETRIES, BACKOFF_MS)
@@ -242,9 +242,9 @@ class SemanticGraphEmbedHelperTest {
         AtomicInteger calls = new AtomicInteger();
         when(djl.predict(any(), any())).thenAnswer(inv -> {
             if (calls.incrementAndGet() == 1) {
-                return Uni.createFrom().<JsonArray>failure(new ConnectException("refused"));
+                throw new ConnectException("refused");
             }
-            return Uni.createFrom().item(arr(arr(0.9)));
+            return arr(arr(0.9));
         });
 
         List<float[]> r = new SemanticGraphEmbedHelper(djl)
@@ -264,9 +264,9 @@ class SemanticGraphEmbedHelperTest {
         WebApplicationException unavailable = new WebApplicationException(Response.status(503).build());
         when(djl.predict(any(), any())).thenAnswer(inv -> {
             if (calls.incrementAndGet() == 1) {
-                return Uni.createFrom().<JsonArray>failure(unavailable);
+                throw unavailable;
             }
-            return Uni.createFrom().item(arr(arr(0.5)));
+            return arr(arr(0.5));
         });
 
         List<float[]> r = new SemanticGraphEmbedHelper(djl)
@@ -284,7 +284,7 @@ class SemanticGraphEmbedHelperTest {
         AtomicInteger calls = new AtomicInteger();
         when(djl.predict(any(), any())).thenAnswer(inv -> {
             calls.incrementAndGet();
-            return Uni.createFrom().<JsonArray>failure(new ConnectException("persistent"));
+            throw new ConnectException("persistent");
         });
 
         Throwable err = new SemanticGraphEmbedHelper(djl)
@@ -313,7 +313,7 @@ class SemanticGraphEmbedHelperTest {
                 Response.status(400).entity("bad inputs").build());
         when(djl.predict(any(), any())).thenAnswer(inv -> {
             calls.incrementAndGet();
-            return Uni.createFrom().<JsonArray>failure(badRequest);
+            throw badRequest;
         });
 
         Throwable err = new SemanticGraphEmbedHelper(djl)
@@ -332,7 +332,7 @@ class SemanticGraphEmbedHelperTest {
         WebApplicationException notFound = new WebApplicationException(Response.status(404).build());
         when(djl.predict(any(), any())).thenAnswer(inv -> {
             calls.incrementAndGet();
-            return Uni.createFrom().<JsonArray>failure(notFound);
+            throw notFound;
         });
 
         Throwable err = new SemanticGraphEmbedHelper(djl)
@@ -354,7 +354,7 @@ class SemanticGraphEmbedHelperTest {
         JsonObject list = new JsonObject().put("models", new JsonArray()
                 .add(new JsonObject().put("modelName", "minilm"))
                 .add(new JsonObject().put("modelName", "paraphrase")));
-        when(djl.listModels()).thenReturn(Uni.createFrom().item(list));
+        when(djl.listModels()).thenReturn(list);
 
         Boolean loaded = new SemanticGraphEmbedHelper(djl).isModelLoaded("minilm")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
@@ -367,7 +367,7 @@ class SemanticGraphEmbedHelperTest {
         DjlServingClient djl = mock(DjlServingClient.class);
         JsonObject list = new JsonObject().put("models", new JsonArray()
                 .add(new JsonObject().put("modelName", "paraphrase")));
-        when(djl.listModels()).thenReturn(Uni.createFrom().item(list));
+        when(djl.listModels()).thenReturn(list);
 
         Boolean loaded = new SemanticGraphEmbedHelper(djl).isModelLoaded("minilm")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
@@ -390,7 +390,10 @@ class SemanticGraphEmbedHelperTest {
     @Test
     void isModelLoaded_listModelsFails_propagates() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        when(djl.listModels()).thenReturn(Uni.createFrom().failure(new ConnectException("down")));
+        // thenAnswer (not thenThrow) because ConnectException is checked and
+        // the sync listModels() signature doesn't declare it. Answer.answer()
+        // declares throws Throwable, so the checked exception is allowed here.
+        when(djl.listModels()).thenAnswer(inv -> { throw new ConnectException("down"); });
 
         Throwable err = new SemanticGraphEmbedHelper(djl).isModelLoaded("minilm")
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
@@ -410,7 +413,7 @@ class SemanticGraphEmbedHelperTest {
         JsonObject list = new JsonObject().put("models", new JsonArray()
                 .add(new JsonObject().put("modelName", "minilm"))
                 .add(new JsonObject().put("modelName", "e5-small")));
-        when(djl.listModels()).thenReturn(Uni.createFrom().item(list));
+        when(djl.listModels()).thenReturn(list);
 
         Set<String> names = new SemanticGraphEmbedHelper(djl).listLoadedModels()
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
@@ -421,8 +424,7 @@ class SemanticGraphEmbedHelperTest {
     @Test
     void listLoadedModels_emptyModelsArray_emptySet() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        when(djl.listModels()).thenReturn(Uni.createFrom().item(
-                new JsonObject().put("models", new JsonArray())));
+        when(djl.listModels()).thenReturn(new JsonObject().put("models", new JsonArray()));
 
         Set<String> names = new SemanticGraphEmbedHelper(djl).listLoadedModels()
                 .subscribe().withSubscriber(UniAssertSubscriber.create())
@@ -433,7 +435,7 @@ class SemanticGraphEmbedHelperTest {
     @Test
     void listLoadedModels_nullResponseBody_emptySet() {
         DjlServingClient djl = mock(DjlServingClient.class);
-        when(djl.listModels()).thenReturn(Uni.createFrom().item((JsonObject) null));
+        when(djl.listModels()).thenReturn((JsonObject) null);
 
         Set<String> names = new SemanticGraphEmbedHelper(djl).listLoadedModels()
                 .subscribe().withSubscriber(UniAssertSubscriber.create())

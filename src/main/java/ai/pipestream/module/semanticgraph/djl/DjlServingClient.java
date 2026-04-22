@@ -1,6 +1,5 @@
 package ai.pipestream.module.semanticgraph.djl;
 
-import io.smallrye.mutiny.Uni;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import jakarta.ws.rs.Consumes;
@@ -13,7 +12,14 @@ import jakarta.ws.rs.core.MediaType;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 
 /**
- * MicroProfile REST client for the DJL Serving HTTP API.
+ * MicroProfile REST client for the DJL Serving HTTP API. Synchronous —
+ * callers MUST be on a virtual / worker thread. Returning plain types
+ * selects Quarkus REST Client's sync path, which hands I/O off to the
+ * REST-client worker pool and blocks the caller. That breaks the
+ * single-event-loop pinning the earlier {@code Uni<…>} surface produced:
+ * Vert.x-bound Mutiny completions for an injected REST client always
+ * re-entered the caller's event-loop context, so every in-flight call
+ * serialised on one thread regardless of pool size.
  *
  * <p>This file is a <b>local copy</b> of the interface that lives in the
  * {@code quarkus-djl-embeddings} extension inside the {@code module-embedder}
@@ -21,11 +27,9 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
  * {@code quarkus-djl-embeddings/runtime/src/main/java/ai/pipestream/quarkus/djl/serving/runtime/client/DjlServingClient.java}).
  *
  * <p>It is duplicated here only because the extension is not yet published as
- * a standalone Maven artifact (verified 2026-04-15: probing
- * {@code ai.pipestream.module:quarkus-djl-embeddings-runtime:0.0.1-SNAPSHOT}
- * against Sonatype snapshots returns 404). Once the extension publishes, this
- * file should be deleted and every {@code @RestClient DjlServingClient} in
- * this module re-pointed to
+ * a standalone Maven artifact. Once the extension publishes, this file should
+ * be deleted and every {@code @RestClient DjlServingClient} in this module
+ * re-pointed to
  * {@code ai.pipestream.quarkus.djl.serving.runtime.client.DjlServingClient}.
  * The {@code configKey} string ({@code "djl-serving"}) is intentionally
  * identical to the extension's so the application.properties entries
@@ -42,7 +46,7 @@ public interface DjlServingClient {
     /** Liveness probe. Returns "Healthy" when DJL Serving is up. */
     @GET
     @Path("/ping")
-    Uni<String> ping();
+    String ping();
 
     /**
      * Synchronous prediction. The {@code input} payload follows DJL Serving's
@@ -53,7 +57,7 @@ public interface DjlServingClient {
     @Path("/predictions/{modelName}")
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
-    Uni<JsonArray> predict(@PathParam("modelName") String modelName, JsonObject input);
+    JsonArray predict(@PathParam("modelName") String modelName, JsonObject input);
 
     /**
      * Lists models registered with DJL Serving. Used by the boundary helper to
@@ -64,5 +68,5 @@ public interface DjlServingClient {
     @GET
     @Path("/models")
     @Produces(MediaType.APPLICATION_JSON)
-    Uni<JsonObject> listModels();
+    JsonObject listModels();
 }

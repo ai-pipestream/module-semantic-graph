@@ -46,9 +46,10 @@ class SemanticGraphStepOptionsTest {
                 .as("Semantic boundaries default to true per ยง6.3")
                 .isTrue();
         assertThat(opts.effectiveMaxSemanticChunksPerDoc())
-                .as("Max-semantic-chunks default is the ยง6.3 hard cap")
+                .as("Max-semantic-chunks default is the effective-infinite cap "
+                        + "(raised from 50 in 8c5849c so 600+ chunk legal docs aren't rejected)")
                 .isEqualTo(SemanticGraphStepOptions.DEFAULT_MAX_SEMANTIC_CHUNKS_PER_DOC)
-                .isEqualTo(50);
+                .isEqualTo(10_000);
         assertThat(opts.effectiveBoundarySimilarityThreshold())
                 .as("Boundary similarity threshold default per ยง6.3")
                 .isEqualTo(0.5f);
@@ -169,7 +170,7 @@ class SemanticGraphStepOptionsTest {
                 true, true, true, false, null,
                 null, null, null, null, null, null, null, null, null);
 
-        opts.validateForUse(); // does not throw โ€” boundaries off, model id irrelevant
+        opts.validateForUse(); // does not throw โÿÿ boundaries off, model id irrelevant
     }
 
     // --- validateForUse: ยง21.3 ---------------------------------------------

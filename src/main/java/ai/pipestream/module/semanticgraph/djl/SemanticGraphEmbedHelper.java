@@ -4,6 +4,7 @@ import ai.pipestream.module.semanticgraph.retry.SemanticGraphRetryPolicy;
 import io.quarkus.cache.CacheResult;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -133,7 +134,9 @@ public class SemanticGraphEmbedHelper {
                     final String label = modelId + "[batch " + batchIdx + "/" + batchCount + "]";
 
                     return SemanticGraphRetryPolicy.withRetry(
-                            () -> djl.predict(modelId, new JsonObject().put("inputs", new JsonArray(slice))),
+                            () -> Uni.createFrom().<JsonArray>item(() ->
+                                            djl.predict(modelId, new JsonObject().put("inputs", new JsonArray(slice))))
+                                    .runSubscriptionOn(Infrastructure.getDefaultWorkerPool()),
                             maxRetries, retryBackoffMs, label)
                             .map(response -> {
                                 List<float[]> parsed = parseBatch(response);
@@ -183,7 +186,9 @@ public class SemanticGraphEmbedHelper {
         if (modelId == null || modelId.isBlank()) {
             return Uni.createFrom().item(Boolean.FALSE);
         }
-        return djl.listModels().map(json -> containsModel(json, modelId));
+        return Uni.createFrom().<JsonObject>item(djl::listModels)
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+                .map(json -> containsModel(json, modelId));
     }
 
     /**
@@ -191,19 +196,21 @@ public class SemanticGraphEmbedHelper {
      * Not cached — used by health/diagnostic paths, not the hot path.
      */
     public Uni<Set<String>> listLoadedModels() {
-        return djl.listModels().map(json -> {
-            if (json == null) return Collections.<String>emptySet();
-            JsonArray models = json.getJsonArray("models");
-            if (models == null || models.isEmpty()) return Collections.<String>emptySet();
-            java.util.Set<String> names = new java.util.LinkedHashSet<>(models.size() * 2);
-            for (int i = 0; i < models.size(); i++) {
-                JsonObject m = models.getJsonObject(i);
-                if (m == null) continue;
-                String name = m.getString("modelName");
-                if (name != null && !name.isEmpty()) names.add(name);
-            }
-            return (Set<String>) names;
-        });
+        return Uni.createFrom().<JsonObject>item(djl::listModels)
+                .runSubscriptionOn(Infrastructure.getDefaultWorkerPool())
+                .map(json -> {
+                    if (json == null) return Collections.<String>emptySet();
+                    JsonArray models = json.getJsonArray("models");
+                    if (models == null || models.isEmpty()) return Collections.<String>emptySet();
+                    java.util.Set<String> names = new java.util.LinkedHashSet<>(models.size() * 2);
+                    for (int i = 0; i < models.size(); i++) {
+                        JsonObject m = models.getJsonObject(i);
+                        if (m == null) continue;
+                        String name = m.getString("modelName");
+                        if (name != null && !name.isEmpty()) names.add(name);
+                    }
+                    return (Set<String>) names;
+                });
     }
 
     // -------------------- helpers --------------------

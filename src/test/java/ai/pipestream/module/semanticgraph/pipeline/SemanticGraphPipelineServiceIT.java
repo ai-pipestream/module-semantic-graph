@@ -335,8 +335,7 @@ class SemanticGraphPipelineServiceIT {
 
     private List<float[]> embedViaDjl(List<String> texts) {
         JsonObject body = new JsonObject().put("inputs", new JsonArray(texts));
-        Uni<JsonArray> call = client.predict(MODEL_NAME, body);
-        JsonArray resp = call.await().atMost(TIMEOUT);
+        JsonArray resp = client.predict(MODEL_NAME, body);
         assertThat(resp).as("DJL predict returned %d rows for %d inputs", resp.size(), texts.size())
                 .hasSize(texts.size());
         List<float[]> out = new ArrayList<>(texts.size());
