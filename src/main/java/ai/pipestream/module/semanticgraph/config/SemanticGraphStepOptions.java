@@ -91,8 +91,20 @@ public record SemanticGraphStepOptions(
         Long retryBackoffMs
 ) {
 
-    /** Default cap on semantic-boundary SPR chunks per doc (DESIGN.md §6.3). */
-    public static final int DEFAULT_MAX_SEMANTIC_CHUNKS_PER_DOC = 50;
+    /**
+     * Default cap on semantic-boundary SPR chunks per doc.
+     *
+     * <p>Was 50 (per DESIGN.md §6.3), but that rejected real-world
+     * documents: a single legal opinion can produce 600+ semantic
+     * boundary groups from sentence-level similarity detection. The cap
+     * was a defensive guard against runaway costs, but downstream
+     * embedding is already batched and bulk indexing is already batched,
+     * so a document with thousands of chunks costs the same per-chunk as
+     * one with fifty. Set effectively-unlimited (10_000); explicit lower
+     * caps can still be applied per-config via
+     * {@code maxSemanticChunksPerDoc}.
+     */
+    public static final int DEFAULT_MAX_SEMANTIC_CHUNKS_PER_DOC = 10_000;
 
     /** Default cosine-similarity threshold below which a topic boundary is recorded. */
     public static final float DEFAULT_BOUNDARY_SIMILARITY_THRESHOLD = 0.5f;

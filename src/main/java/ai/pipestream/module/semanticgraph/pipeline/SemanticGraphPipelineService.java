@@ -22,6 +22,7 @@ import com.google.protobuf.Struct;
 import com.google.protobuf.Value;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
@@ -146,8 +147,17 @@ public class SemanticGraphPipelineService {
                                 metrics.boundaryCompleted(Duration.ofNanos(System.nanoTime() - boundaryStartNs)));
 
         // Phase 4 — assemble + self-check + emit
+        // assembleOutputDoc calls SemanticPipelineInvariants.assertPostSemanticGraph
+        // which scans every chunk in every SPR. On a doc with thousands of chunks
+        // this takes hundreds of ms to seconds of straight CPU. Doing that on
+        // whichever thread delivered the tuple (commonly the Vert.x event loop)
+        // stalls every other in-flight request on that event loop. Switch to the
+        // default worker pool before the .map so the CPU work can't hold the
+        // event loop. Wall-clock thread dump 2026-04-21 caught eventloop-thread-2
+        // RUNNABLE for 55+ seconds of CPU inside assertPostSemanticGraph.
         return Uni.combine().all().unis(centroidsUni, boundariesUni)
                 .asTuple()
+                .emitOn(Infrastructure.getDefaultWorkerPool())
                 .map(tuple -> assembleOutputDoc(prepared, tuple.getItem1(), tuple.getItem2()))
                 .onTermination().invoke((ignored, err, cancelled) -> {
                     // Per-doc wall clock — success AND failure both record so
